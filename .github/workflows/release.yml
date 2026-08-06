@@ -28,7 +28,7 @@ jobs:
       matrix:
         flavor: [full, lite, nano]
     container:
-      image: ghcr.io/hybrid-mount/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -114,7 +114,7 @@ jobs:
       contents: write
       packages: read
     container:
-      image: ghcr.io/hybrid-mount/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
