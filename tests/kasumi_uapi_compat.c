@@ -44,7 +44,7 @@ ASSERT_OFFSET(struct kasumi_spoof_kstat, is_static, 360);
 ASSERT_OFFSET(struct kasumi_spoof_kstat, err, 364);
 
 ASSERT_SIZE(struct kasumi_spoof_uname, 396);
-ASSERT_OFFSET(struct kasumi_spoof_uname, err, 390);
+ASSERT_OFFSET(struct kasumi_spoof_uname, err, 392);
 ASSERT_SIZE(struct kasumi_spoof_cmdline, 4100);
 ASSERT_OFFSET(struct kasumi_spoof_cmdline, err, 4096);
 
