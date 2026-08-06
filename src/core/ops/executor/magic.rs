@@ -16,6 +16,7 @@ use crate::{
 pub(super) fn mount_magic(
     modules: &[Module],
     ids: &[String],
+    kasumi_fallback_ids: &[String],
     config: &config::Config,
     tempdir: &Path,
 ) -> Result<(Vec<String>, MountStatistics)> {
@@ -32,11 +33,18 @@ pub(super) fn mount_magic(
         std::fs::create_dir_all(&magic_ws_path)?;
     }
 
-    let module_ids: HashSet<String> = ids.iter().cloned().collect();
+    let module_ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let fallback_ids: HashSet<&str> = kasumi_fallback_ids.iter().map(String::as_str).collect();
     let selected_modules: Vec<Module> = modules
         .iter()
-        .filter(|module| module_ids.contains(&module.id))
+        .filter(|module| module_ids.contains(module.id.as_str()))
         .cloned()
+        .map(|mut module| {
+            if fallback_ids.contains(module.id.as_str()) {
+                module.rules = module.rules.with_kasumi_fallback_to_magic();
+            }
+            module
+        })
         .collect();
     let managed_partitions = partitions::managed_partition_names();
 
@@ -54,8 +62,9 @@ pub(super) fn mount_magic(
     crate::scoped_log!(
         debug,
         "executor:magic",
-        "complete: requested_modules={}, mounted_modules={}",
+        "complete: requested_modules={}, fallback_modules={}, mounted_modules={}",
         ids.len(),
+        kasumi_fallback_ids.len(),
         mounted_ids.len()
     );
 
