@@ -41,6 +41,7 @@ pub struct FeatureInfo {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LkmPayload {
     pub loaded: bool,
+    pub managed: bool,
     pub module_name: Option<String>,
     pub autoload: bool,
     pub kmi_override: String,
@@ -53,6 +54,7 @@ impl From<LkmStatus> for LkmPayload {
     fn from(status: LkmStatus) -> Self {
         Self {
             loaded: status.loaded,
+            managed: status.managed,
             module_name: status.module_name,
             autoload: status.autoload,
             kmi_override: status.kmi_override,
@@ -226,7 +228,10 @@ fn mismatch_message(status: KasumiStatus, kernel_version: i32) -> Option<String>
 
 #[cfg(test)]
 mod tests {
-    use super::parse_kasumi_rule_listing;
+    use std::path::PathBuf;
+
+    use super::{LkmPayload, parse_kasumi_rule_listing};
+    use crate::sys::lkm::LkmStatus;
 
     #[test]
     fn rule_listing_skips_feature_status_lines() {
@@ -252,5 +257,23 @@ mod tests {
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].path.as_deref(), Some("enabled"));
         assert_eq!(rules[1].path.as_deref(), Some("disabled"));
+    }
+
+    #[test]
+    fn lkm_payload_preserves_management_ownership() {
+        let payload = LkmPayload::from(LkmStatus {
+            loaded: true,
+            managed: false,
+            module_name: Some("external_kasumi".to_string()),
+            autoload: false,
+            kmi_override: String::new(),
+            current_kmi: "android15-6.6".to_string(),
+            search_dir: PathBuf::from("/data/adb/modules/meta-hybrid_mount/kasumi"),
+            module_file: PathBuf::new(),
+        });
+
+        assert!(payload.loaded);
+        assert!(!payload.managed);
+        assert_eq!(payload.module_name.as_deref(), Some("external_kasumi"));
     }
 }
