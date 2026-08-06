@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use super::common::build_managed_partitions;
@@ -24,7 +25,7 @@ use crate::{
     utils,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct CompiledRules {
     pub(super) add_rules: Vec<KasumiAddRule>,
     pub(super) merge_rules: Vec<KasumiMergeRule>,
@@ -109,7 +110,10 @@ fn relative_mode(module: &Module, relative: &Path) -> MountMode {
     module.rules.get_mode(relative_str.as_ref())
 }
 
-fn virtual_target_is_managed(target: &Path, managed_partitions: &HashSet<String>) -> bool {
+pub(super) fn virtual_target_is_managed(
+    target: &Path,
+    managed_partitions: &HashSet<String>,
+) -> bool {
     let Ok(relative) = target.strip_prefix("/") else {
         return false;
     };
