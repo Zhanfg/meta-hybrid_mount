@@ -9,14 +9,13 @@ mod runtime;
 mod status;
 
 use anyhow::{Result, bail};
-
-use crate::conf::config::Config;
-
 pub use cleanup::rollback_runtime;
 pub use runtime::{apply, reset_runtime};
 pub use status::{
     can_operate, collect_runtime_info, hook_lines, invalidate_runtime_caches, require_live,
 };
+
+use crate::conf::config::Config;
 
 /// Apply live Kasumi configuration with rollback to a complete clean baseline.
 pub fn apply_runtime_config(config: &Config) -> Result<bool> {
