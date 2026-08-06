@@ -18,6 +18,11 @@ jobs:
         with:
           ref: fix/restore-full-kasumi
           fetch-depth: 0
+      - name: Reset to the latest remote head
+        run: |
+          set -euo pipefail
+          git fetch origin fix/restore-full-kasumi
+          git reset --hard origin/fix/restore-full-kasumi
       - name: Point release jobs to fork-local CI image
         run: |
           set -euo pipefail
@@ -32,5 +37,4 @@ jobs:
           git add .github/workflows/release.yml
           git diff --cached --check
           git commit -m 'ci: use the fork-local image for releases'
-          git pull --rebase origin fix/restore-full-kasumi
           git push origin HEAD:fix/restore-full-kasumi
