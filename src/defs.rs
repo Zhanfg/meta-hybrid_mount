@@ -17,6 +17,8 @@ pub const STATE_FILE: &str = "/data/adb/hybrid-mount/run/daemon_state.json";
 pub const SOCKET_FILE: &str = "/data/adb/hybrid-mount/run/daemon.sock";
 pub const PID_FILE: &str = "/data/adb/hybrid-mount/run/daemon.pid";
 pub const KASUMI_LKM_OWNER_FILE: &str = "/data/adb/hybrid-mount/run/kasumi_lkm_owner.json";
+pub const KASUMI_RULE_SNAPSHOT_FILE: &str =
+    "/data/adb/hybrid-mount/run/kasumi_mount_rules.json";
 pub const SYSTEM_RW_DIR: &str = "/data/adb/hybrid-mount/rw";
 pub const CONFIG_FILE: &str = "/data/adb/hybrid-mount/config.toml";
 pub const MODULE_BLACKLIST_FILE: &str = "/data/adb/hybrid-mount/module_blacklist.toml";
