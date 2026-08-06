@@ -51,6 +51,12 @@ pub fn set_overlay_opaque<P: AsRef<Path>>(_path: P) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "control-plane")]
+pub fn remember_overlay_xattr_supported() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    TMPFS_XATTR_SUPPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn lsetfilecon<P: AsRef<Path>>(path: P, con: &str) -> Result<()> {
     lsetxattr(
