@@ -666,7 +666,7 @@ fn resolve_release_version(tag: &str) -> Result<VersionInfo> {
 
     let commit_count = build_meta_shared::git_commit_count()?;
     let full_version = format!("{}-{}", clean_version, commit_count);
-    let version_code = build_meta_shared::calculate_version_code(clean_version)?;
+    let version_code = build_meta_shared::calculate_fork_version_code(commit_count)?;
 
     Ok(VersionInfo {
         clean_version: clean_version.to_string(),
@@ -681,7 +681,7 @@ fn resolve_local_or_ci_version() -> Result<VersionInfo> {
     let commit_count = build_meta_shared::git_commit_count()?;
 
     let full_version = format!("{}-{}", clean_version, commit_count);
-    let version_code = build_meta_shared::calculate_version_code(&clean_version)?;
+    let version_code = build_meta_shared::calculate_fork_version_code(commit_count)?;
 
     Ok(VersionInfo {
         clean_version,

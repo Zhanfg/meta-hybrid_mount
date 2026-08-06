@@ -90,13 +90,10 @@ typedef uint64_t __aligned_u64;
 fn gen_module_prop(data: &build_meta_shared::CargoConfig) -> Result<()> {
     let package = &data.package;
     let id = package.name.replace('-', "_");
-    let version_code = build_meta_shared::calculate_version_code(&package.version)?;
+    let commit_count = build_meta_shared::git_commit_count()?;
+    let version_code = build_meta_shared::calculate_fork_version_code(commit_count)?;
     let author = package.authors.join(" & ");
-    let version = format!(
-        "{}-{}",
-        package.version,
-        build_meta_shared::git_commit_count()?
-    );
+    let version = format!("{}-{}", package.version, commit_count);
     let rendered_version = format!("v{}", version.trim());
     let content = build_meta_shared::render_module_prop(&build_meta_shared::ModulePropData {
         id: &id,

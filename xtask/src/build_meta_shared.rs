@@ -5,7 +5,6 @@
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use semver::Version;
 use serde::Deserialize;
 
 #[allow(dead_code)]
@@ -54,9 +53,17 @@ pub struct ModulePropData<'a> {
     pub webui_icon: bool,
 }
 
-pub fn calculate_version_code(version_str: &str) -> Result<String> {
-    let version = Version::parse(version_str)?;
-    Ok((version.major * 100000 + version.minor * 1000 + version.patch).to_string())
+const FORK_VERSION_CODE_BASE: i64 = 1_000_000_000;
+
+pub fn calculate_fork_version_code(commit_count: i32) -> Result<String> {
+    if commit_count < 0 {
+        bail!("git commit count cannot be negative: {commit_count}");
+    }
+
+    let version_code = FORK_VERSION_CODE_BASE
+        .checked_add(i64::from(commit_count))
+        .context("fork version code overflow")?;
+    Ok(version_code.to_string())
 }
 
 pub fn git_commit_count() -> Result<i32> {
@@ -79,15 +86,13 @@ pub fn git_commit_count() -> Result<i32> {
 
 pub fn render_module_prop(data: &ModulePropData<'_>) -> String {
     let mut content = format!(
-        "id={}\nname={}\nversion={}\nversionCode={}\nauthor={}\ndescription={}\nupdateJson={}\nmetamodule=1\n",
-        data.id,
-        data.name,
-        data.version,
-        data.version_code,
-        data.author,
-        data.description,
-        data.update_json,
+        "id={}\nname={}\nversion={}\nversionCode={}\nauthor={}\ndescription={}\n",
+        data.id, data.name, data.version, data.version_code, data.author, data.description,
     );
+    if !data.update_json.trim().is_empty() {
+        content.push_str(&format!("updateJson={}\n", data.update_json));
+    }
+    content.push_str("metamodule=1\n");
     if data.webui_icon {
         content.push_str("webuiIcon=launcher.png\n");
     }
@@ -106,4 +111,42 @@ pub fn render_webui_constants(
     format!(
         "export const APP_VERSION = \"{version}\";\nexport const IS_RELEASE = {is_release};\nexport const ENABLE_KASUMI = {enable_kasumi};\nexport const RUST_PATHS = {{\n  CONFIG: \"{config_path}\",\n  DAEMON_STATE: \"{state_path}\",\n  BINARY: \"{binary_path}\",\n}} as const;\n"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module_prop(update_json: &str) -> String {
+        render_module_prop(&ModulePropData {
+            id: "hybrid_mount",
+            name: "Hybrid Mount Fork",
+            version: "4.2.0-2000",
+            version_code: "1000002000",
+            author: "Hybrid Mount Developers",
+            description: "test",
+            update_json,
+            webui_icon: true,
+        })
+    }
+
+    #[test]
+    fn fork_version_code_is_monotonic() {
+        assert_eq!(calculate_fork_version_code(1).unwrap(), "1000000001");
+        assert_eq!(calculate_fork_version_code(2000).unwrap(), "1000002000");
+        assert!(calculate_fork_version_code(-1).is_err());
+    }
+
+    #[test]
+    fn blank_update_url_is_omitted() {
+        let prop = module_prop("");
+        assert!(!prop.contains("updateJson="));
+        assert!(prop.contains("name=Hybrid Mount Fork\n"));
+    }
+
+    #[test]
+    fn configured_update_url_is_preserved() {
+        let prop = module_prop("https://example.invalid/update.json");
+        assert!(prop.contains("updateJson=https://example.invalid/update.json\n"));
+    }
 }
