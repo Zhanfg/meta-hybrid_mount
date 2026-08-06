@@ -7,11 +7,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-
-use anyhow::{Context, Result, bail};
-
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+use anyhow::{Context, Result, bail};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use rustix::{
     io::Errno,
@@ -74,14 +73,12 @@ impl MountTransaction {
     }
 
     fn new_mount_targets(&self) -> Result<Vec<PathBuf>> {
-        Ok(select_new_entries(
-            read_mountinfo()?,
-            &self.baseline_ids,
-            &self.scope_roots,
+        Ok(
+            select_new_entries(read_mountinfo()?, &self.baseline_ids, &self.scope_roots)
+                .into_iter()
+                .map(|entry| entry.mount_point)
+                .collect(),
         )
-        .into_iter()
-        .map(|entry| entry.mount_point)
-        .collect())
     }
 
     fn rollback(&mut self) -> Result<()> {
@@ -105,11 +102,9 @@ impl Drop for MountTransaction {
         }
 
         match self.rollback() {
-            Ok(()) => crate::scoped_log!(
-                warn,
-                "mount:rollback",
-                "boot mount transaction rolled back"
-            ),
+            Ok(()) => {
+                crate::scoped_log!(warn, "mount:rollback", "boot mount transaction rolled back")
+            }
             Err(error) => crate::scoped_log!(
                 error,
                 "mount:rollback",
@@ -175,8 +170,9 @@ fn detach_mount(target: &Path) -> Result<()> {
     match unmount(target, UnmountFlags::DETACH) {
         Ok(()) => Ok(()),
         Err(error) if matches!(error, Errno::INVAL | Errno::NOENT) => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to detach mount {}", target.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to detach mount {}", target.display()))
+        }
     }
 }
 
@@ -229,9 +225,7 @@ fn decode_mountinfo_path(value: &str) -> Result<PathBuf> {
         if input[index] == b'\\' && index + 3 < input.len() {
             let digits = &input[index + 1..index + 4];
             if digits.iter().all(|byte| matches!(byte, b'0'..=b'7')) {
-                let decoded = (digits[0] - b'0') * 64
-                    + (digits[1] - b'0') * 8
-                    + (digits[2] - b'0');
+                let decoded = (digits[0] - b'0') * 64 + (digits[1] - b'0') * 8 + (digits[2] - b'0');
                 output.push(decoded);
                 index += 4;
                 continue;
