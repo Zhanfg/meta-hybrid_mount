@@ -568,6 +568,7 @@ fn write_http_response(
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Methods: POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: authorization, content-type\r\n\
+         Access-Control-Allow-Private-Network: true\r\n\
          Access-Control-Max-Age: 600\r\n\
          Connection: {connection}\r\n\
          Keep-Alive: timeout=30\r\n\r\n",
@@ -844,6 +845,21 @@ mod tests {
 
         let full = Arc::new(AtomicUsize::new(MAX_WEBUI_CONNECTIONS));
         assert!(ActiveWebuiConnectionGuard::try_acquire(&full).is_none());
+    }
+
+    #[test]
+    fn http_response_allows_private_network_access() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        let (mut server, _peer) = listener.accept().unwrap();
+
+        write_http_response(&mut server, 204, "No Content", b"", ConnectionAction::Close).unwrap();
+        drop(server);
+
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.contains("Access-Control-Allow-Private-Network: true\r\n"));
     }
 
     #[test]

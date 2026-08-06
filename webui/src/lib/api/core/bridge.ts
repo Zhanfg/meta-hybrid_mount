@@ -16,7 +16,10 @@
 
 import { AppError } from "./error";
 import { PATHS } from "../../constants";
-import { shellEscapeDoubleQuoted } from "./shell";
+import {
+  shellEscapeDoubleQuoted,
+  shellEscapeSingleQuoted,
+} from "./shell";
 import {
   parseDaemonJson,
   webuiSessionSchema,
@@ -160,6 +163,7 @@ export function resolveShouldUseMock(env: MockModeEnv): boolean {
 export const shouldUseMock = resolveShouldUseMock(import.meta.env);
 export const hasExecBridge = Boolean(ksuExec);
 const DAEMON_WAKE_TIMEOUT_MS = 5000;
+const DAEMON_HTTP_PROBE_TIMEOUT_MS = 1500;
 const DAEMON_HTTP_TIMEOUT_MS = 30000;
 const DAEMON_MODULES_TIMEOUT_MS = 15000;
 
@@ -167,6 +171,7 @@ const SSE_RECONNECT_DELAY_MS = 1000;
 
 let daemonReady: Promise<void> | null = null;
 let webuiSession: WebuiSession | null = null;
+let daemonTransport: "unknown" | "http" | "exec" = "unknown";
 let sseSource: EventSource | null = null;
 let sseSourceUrl: string | null = null;
 let sseReconnectTimer: number | null = null;
@@ -215,11 +220,21 @@ function scheduleSseReconnect(): void {
 
 function setWebuiSession(session: WebuiSession): void {
   webuiSession = session;
-  startSse();
+  daemonTransport = "unknown";
+}
+
+function setDaemonTransport(transport: "http" | "exec"): void {
+  daemonTransport = transport;
+  if (transport === "http") {
+    startSse();
+  } else {
+    stopSse();
+  }
 }
 
 function clearWebuiSession(): void {
   webuiSession = null;
+  daemonTransport = "unknown";
   stopSse();
 }
 
@@ -241,6 +256,18 @@ async function runCommandExpectOk(command: string): Promise<string> {
 
 function hybridMountCommand(binaryPath: string, args: string): string {
   return `"${shellEscapeDoubleQuoted(binaryPath)}" ${args}`;
+}
+
+export function buildDaemonRpcCommand(
+  binaryPath: string,
+  configPath: string,
+  command: DaemonCommandPayload,
+): string {
+  const payload = shellEscapeSingleQuoted(JSON.stringify(command));
+  return `${hybridMountCommand(
+    binaryPath,
+    `--config "${shellEscapeDoubleQuoted(configPath)}" daemon rpc`,
+  )} '${payload}'`;
 }
 
 function withTimeout<T>(
@@ -289,6 +316,13 @@ export async function ensureDaemonAwake(binaryPath: string): Promise<void> {
     daemonReady = (async () => {
       const session = await coldStartDaemon(binaryPath);
       setWebuiSession(session);
+      const httpAvailable = await probeDaemonHttp(session);
+      setDaemonTransport(httpAvailable ? "http" : "exec");
+      if (!httpAvailable) {
+        console.info(
+          "daemon HTTP bridge unavailable; using KernelSU exec fallback",
+        );
+      }
     })().catch((error) => {
       daemonReady = null;
       clearWebuiSession();
@@ -335,9 +369,11 @@ export function parseSseStateUpdateData(raw: string): SseStateUpdateEvent {
 async function runDaemonHttp(
   session: WebuiSession,
   command: DaemonCommandPayload,
+  timeoutOverrideMs?: number,
 ): Promise<unknown> {
   const controller = new AbortController();
-  const { timeoutMs } = getDaemonCommandMetadata(command);
+  const timeoutMs =
+    timeoutOverrideMs ?? getDaemonCommandMetadata(command).timeoutMs;
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   let text: string;
@@ -355,9 +391,15 @@ async function runDaemonHttp(
     text = await response.text();
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new AppError(`daemon HTTP request timed out after ${timeoutMs}ms`);
+      throw new DaemonHttpTransportError(
+        `daemon HTTP request timed out after ${timeoutMs}ms`,
+      );
     }
-    throw error;
+    throw new DaemonHttpTransportError(
+      error instanceof Error
+        ? `daemon HTTP connection failed: ${error.message}`
+        : "daemon HTTP connection failed",
+    );
   } finally {
     window.clearTimeout(timer);
   }
@@ -377,6 +419,36 @@ async function runDaemonHttp(
     throw new AppError(`daemon HTTP request failed: ${response.status}`);
   }
   return payload;
+}
+
+class DaemonHttpTransportError extends AppError {}
+
+async function probeDaemonHttp(session: WebuiSession): Promise<boolean> {
+  try {
+    await runDaemonHttp(
+      session,
+      { type: "ping" },
+      DAEMON_HTTP_PROBE_TIMEOUT_MS,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runDaemonExec(
+  command: DaemonCommandPayload,
+  binaryPath: string,
+): Promise<unknown> {
+  const { timeoutMs } = getDaemonCommandMetadata(command);
+  const raw = await withTimeout(
+    runCommandExpectOk(
+      buildDaemonRpcCommand(binaryPath, PATHS.CONFIG, command),
+    ),
+    timeoutMs,
+    `daemon exec request timed out after ${timeoutMs}ms`,
+  );
+  return parseDaemonJsonOutput(raw);
 }
 
 // In-flight request deduplication: identical concurrent commands share one promise.
@@ -409,6 +481,10 @@ async function runDaemonCommandInternal(
   binaryPath: string,
 ): Promise<unknown> {
   await ensureDaemonAwake(binaryPath);
+  if (daemonTransport === "exec") {
+    return runDaemonExec(command, binaryPath);
+  }
+
   const session = webuiSession;
   if (!session) {
     throw new AppError("hybrid-mount daemon WebUI session is unavailable");
@@ -417,8 +493,17 @@ async function runDaemonCommandInternal(
   try {
     return await runDaemonHttp(session, command);
   } catch (error) {
-    daemonReady = null;
-    clearWebuiSession();
+    if (!(error instanceof DaemonHttpTransportError)) {
+      throw error;
+    }
+
+    setDaemonTransport("exec");
+    if (getDaemonCommandMetadata(command).dedupeInFlight) {
+      return runDaemonExec(command, binaryPath);
+    }
+
+    // The write may already have reached the daemon, so do not retry it.
+    // Keep the live Unix-socket session and use exec for subsequent requests.
     throw error;
   }
 }
@@ -436,6 +521,7 @@ export function onSseStateUpdate(handler: SseStateHandler): () => void {
 
 export function startSse(): void {
   if (shouldUseMock || !hasExecBridge) return;
+  if (daemonTransport !== "http") return;
   if (sseHandlers.length === 0) return;
   const session = webuiSession;
   if (!session) return;

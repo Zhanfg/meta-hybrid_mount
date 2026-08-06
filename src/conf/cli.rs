@@ -155,6 +155,10 @@ pub enum DaemonCommands {
     Ping,
     #[command(name = "webui-start")]
     WebuiStart,
+    /// Send a serialized daemon command over the Unix socket.
+    Rpc {
+        command: String,
+    },
     Stop,
     Status,
 }

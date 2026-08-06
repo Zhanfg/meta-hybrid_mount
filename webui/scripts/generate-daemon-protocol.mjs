@@ -72,7 +72,8 @@ const generated = render(extractCommandTypes(protocolSource));
 
 if (checkMode) {
   const current = await readFile(outputPath, "utf8");
-  if (current !== generated) {
+  const normalizeLineEndings = (value) => value.replace(/\r\n/g, "\n");
+  if (normalizeLineEndings(current) !== normalizeLineEndings(generated)) {
     console.error(
       "protocol.generated.ts is stale; run pnpm generate:daemon-protocol",
     );

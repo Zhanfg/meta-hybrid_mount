@@ -35,6 +35,7 @@ pub fn run(cli: &Cli, command: &Commands) -> Result<()> {
         Commands::Daemon { command } => match command {
             DaemonCommands::Launch => startup::run_and_serve(cli),
             DaemonCommands::Serve => daemon::serve(),
+            DaemonCommands::Rpc { command } => dispatch(cli, parse_daemon_command(command)?),
             _ => dispatch(cli, daemon_daemon_command(command)),
         },
         #[cfg(feature = "kasumi")]
@@ -91,7 +92,9 @@ fn daemon_daemon_command(command: &DaemonCommands) -> DaemonCommand {
         DaemonCommands::WebuiStart => DaemonCommand::System(SystemCommand::WebuiStart),
         DaemonCommands::Stop => DaemonCommand::System(SystemCommand::Shutdown),
         DaemonCommands::Status => DaemonCommand::System(SystemCommand::Status),
-        DaemonCommands::Launch | DaemonCommands::Serve => unreachable!("handled before dispatch"),
+        DaemonCommands::Launch | DaemonCommands::Serve | DaemonCommands::Rpc { .. } => {
+            unreachable!("handled before dispatch")
+        }
     }
 }
 
@@ -197,4 +200,34 @@ fn kasumi_rule_daemon_command(command: &KasumiRuleCommands) -> DaemonCommand {
 
 fn parse_json(input: &str, context: &'static str) -> Result<serde_json::Value> {
     serde_json::from_str(input).context(context)
+}
+
+fn parse_daemon_command(input: &str) -> Result<DaemonCommand> {
+    serde_json::from_str(input).context("Failed to parse daemon RPC command")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_rpc_parses_flat_protocol_command() {
+        let command = parse_daemon_command(
+            r#"{"type":"api-config-patch","patch":{"default_mode":"magic"},"apply_runtime":false}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            command,
+            DaemonCommand::Config(ConfigCommand::Patch {
+                apply_runtime: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn daemon_rpc_rejects_unknown_command() {
+        assert!(parse_daemon_command(r#"{"type":"not-a-command"}"#).is_err());
+    }
 }

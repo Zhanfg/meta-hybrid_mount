@@ -17,3 +17,7 @@
 export function shellEscapeDoubleQuoted(value: string): string {
   return value.replace(/(["\\$`])/g, "\\$1");
 }
+
+export function shellEscapeSingleQuoted(value: string): string {
+  return value.replace(/'/g, "'\\''");
+}

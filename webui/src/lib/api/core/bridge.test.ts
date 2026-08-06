@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "./error";
 import {
+  buildDaemonRpcCommand,
   buildSseUrl,
   getDaemonCommandMetadata,
   parseDaemonJsonOutput,
@@ -125,6 +126,23 @@ describe("daemon command metadata", () => {
       dedupeInFlight: false,
       timeoutMs: 30000,
     });
+  });
+});
+
+describe("daemon exec fallback", () => {
+  it("quotes serialized RPC commands as one shell argument", () => {
+    expect(
+      buildDaemonRpcCommand(
+        "/data/adb/modules/hybrid_mount/hybrid-mount",
+        "/data/adb/hybrid-mount/config.toml",
+        {
+          type: "api-open-url",
+          url: "https://example.test/search?q=it's safe",
+        },
+      ),
+    ).toBe(
+      `"/data/adb/modules/hybrid_mount/hybrid-mount" --config "/data/adb/hybrid-mount/config.toml" daemon rpc '{"type":"api-open-url","url":"https://example.test/search?q=it'\\''s safe"}'`,
+    );
   });
 });
 
