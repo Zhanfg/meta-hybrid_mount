@@ -4,6 +4,9 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "kasumi")]
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PrepareMetrics {
     pub elapsed_ms: u64,
@@ -20,7 +23,7 @@ pub struct OverlayOperation {
     pub lowerdirs: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg(feature = "kasumi")]
 pub struct KasumiAddRule {
     pub target: String,
@@ -28,7 +31,7 @@ pub struct KasumiAddRule {
     pub file_type: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg(feature = "kasumi")]
 pub struct KasumiMergeRule {
     pub target: String,
