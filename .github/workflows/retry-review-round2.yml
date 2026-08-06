@@ -19,22 +19,11 @@ jobs:
           ref: review/triple-code-review
           fetch-depth: 0
 
-      - name: Extract and apply reviewed patch
+      - name: Apply and verify reviewed fixes
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          lines = Path('.github/workflows/apply-review-round2.yml').read_text().splitlines()
-          start = next(index for index, line in enumerate(lines) if line.strip() == "python3 - <<'PY'") + 1
-          end = next(index for index in range(start, len(lines)) if lines[index].strip() == 'PY')
-          prefix = ' ' * 10
-          script_lines = [line[len(prefix):] if line.startswith(prefix) else line for line in lines[start:end]]
-          Path('/tmp/apply_round2.py').write_text('\n'.join(script_lines) + '\n')
-          PY
-
-          python3 /tmp/apply_round2.py
+          python3 .github/scripts/apply_review_round2.py
           cargo fmt --all
           git diff --check
           cargo test --workspace --all-features
@@ -52,6 +41,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/core/ops/plan.rs src/core/storage/mod.rs src/core/kasumi_coordinator.rs src/core/controller.rs src/mount/kasumi/runtime.rs src/core/ops/executor/mod.rs src/sys/lkm.rs webui/src/lib/types.ts webui/src/routes/KasumiTab/LkmSection.tsx
+          git add src/core/ops/plan.rs src/core/storage/mod.rs src/core/kasumi_coordinator.rs src/core/controller.rs src/core/ops/executor/mod.rs src/sys/lkm.rs webui/src/lib/types.ts webui/src/routes/KasumiTab/LkmSection.tsx
           git commit -m 'fix: make Kasumi execution transactional and downgrade locally'
           git push origin HEAD:review/triple-code-review
