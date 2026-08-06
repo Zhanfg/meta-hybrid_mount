@@ -4,10 +4,44 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 ############################################
-# mix-mount uninstall.sh
+# Hybrid Mount uninstall.sh
 # Cleanup script for metamodule removal
 ############################################
 
-rm -rf "/data/adb/hybrid-mount"
+MODDIR="${0%/*}"
+BASE_DIR="/data/adb/hybrid-mount"
+CONFIG_FILE="$BASE_DIR/config.toml"
+PID_FILE="$BASE_DIR/run/daemon.pid"
+SOCKET_FILE="$BASE_DIR/run/daemon.sock"
+BINARY="$MODDIR/hybrid-mount"
+
+if [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
+  # Full builds may own a Kasumi LKM for the current boot. Lite and Nano
+  # builds reject this subcommand, so keep the cleanup best-effort.
+  "$BINARY" --config "$CONFIG_FILE" lkm unload >/dev/null 2>&1 || true
+
+  if [ -S "$SOCKET_FILE" ] || [ -r "$PID_FILE" ]; then
+    daemon_pid=""
+    if [ -r "$PID_FILE" ]; then
+      daemon_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    fi
+
+    "$BINARY" --config "$CONFIG_FILE" daemon stop >/dev/null 2>&1 || true
+
+    case "$daemon_pid" in
+    '' | *[!0-9]*)
+      ;;
+    *)
+      wait_count=0
+      while kill -0 "$daemon_pid" 2>/dev/null && [ "$wait_count" -lt 20 ]; do
+        sleep 0.1
+        wait_count=$((wait_count + 1))
+      done
+      ;;
+    esac
+  fi
+fi
+
+rm -rf "$BASE_DIR"
 
 exit 0
