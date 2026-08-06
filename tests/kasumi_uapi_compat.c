@@ -44,6 +44,13 @@ ASSERT_OFFSET(struct kasumi_spoof_kstat, is_static, 360);
 ASSERT_OFFSET(struct kasumi_spoof_kstat, err, 364);
 
 ASSERT_SIZE(struct kasumi_spoof_uname, 396);
+ASSERT_OFFSET(struct kasumi_spoof_uname, sysname, 0);
+ASSERT_OFFSET(struct kasumi_spoof_uname, nodename, 65);
+ASSERT_OFFSET(struct kasumi_spoof_uname, release, 130);
+ASSERT_OFFSET(struct kasumi_spoof_uname, version, 195);
+ASSERT_OFFSET(struct kasumi_spoof_uname, machine, 260);
+ASSERT_OFFSET(struct kasumi_spoof_uname, domainname, 325);
+/* Six 65-byte arrays occupy 390 bytes; the trailing int is 4-byte aligned. */
 ASSERT_OFFSET(struct kasumi_spoof_uname, err, 392);
 ASSERT_SIZE(struct kasumi_spoof_cmdline, 4100);
 ASSERT_OFFSET(struct kasumi_spoof_cmdline, err, 4096);

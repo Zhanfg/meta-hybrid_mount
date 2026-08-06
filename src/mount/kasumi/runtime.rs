@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{
+    cleanup,
     common::{
         effective_maps_spoof_enabled, effective_mount_hide_enabled, effective_selinux_fix_enabled,
         effective_statfs_spoof_enabled, effective_stealth_enabled, feature_supported,
@@ -302,10 +303,8 @@ pub fn reset_runtime(config: &config::Config) -> Result<bool> {
         config.kasumi.mirror_path.display()
     );
 
+    cleanup::rollback_runtime().context("failed to reset complete Kasumi runtime state")?;
     kasumi::set_mirror_path(&config.kasumi.mirror_path)?;
-    kasumi::set_enabled(false)?;
-    kasumi::clear_rules()?;
-    kasumi::clear_maps_rules()?;
 
     let features = get_features()?;
     log_feature_summary(features);

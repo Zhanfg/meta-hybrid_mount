@@ -225,6 +225,8 @@ pub(crate) fn prepare_mount_plan_with_root(
         magic_module_ids: sorted_ids(magic_ids),
         #[cfg(feature = "kasumi")]
         kasumi_module_ids: sorted_ids(kasumi_ids),
+        #[cfg(feature = "kasumi")]
+        kasumi_fallback_module_ids: Vec::new(),
     };
 
     crate::scoped_log!(

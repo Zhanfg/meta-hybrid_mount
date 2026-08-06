@@ -71,29 +71,18 @@ impl Drop for KasumiRuntimeGuard {
         if !self.armed {
             return;
         }
-        if let Err(error) = crate::sys::kasumi::set_enabled(false) {
-            crate::scoped_log!(
+        match crate::mount::kasumi::rollback_runtime() {
+            Ok(()) => crate::scoped_log!(
+                warn,
+                "executor",
+                "Kasumi runtime rolled back after execution failure"
+            ),
+            Err(error) => crate::scoped_log!(
                 error,
                 "executor",
-                "Kasumi rollback disable failed: error={:#}",
+                "Kasumi runtime rollback incomplete: error={:#}",
                 error
-            );
-        }
-        if let Err(error) = crate::sys::kasumi::clear_rules() {
-            crate::scoped_log!(
-                error,
-                "executor",
-                "Kasumi rollback rule cleanup failed: error={:#}",
-                error
-            );
-        }
-        if let Err(error) = crate::sys::kasumi::clear_maps_rules() {
-            crate::scoped_log!(
-                error,
-                "executor",
-                "Kasumi rollback maps cleanup failed: error={:#}",
-                error
-            );
+            ),
         }
     }
 }
@@ -113,10 +102,11 @@ impl Executor {
         crate::scoped_log!(
             info,
             "executor",
-            "start: overlay_ops={}, preselected_magic_modules={}, preselected_kasumi_modules={}",
+            "start: overlay_ops={}, preselected_magic_modules={}, preselected_kasumi_modules={}, kasumi_fallback_modules={}",
             plan.overlay_ops.len(),
             plan.magic_module_ids.len(),
-            plan.kasumi_count()
+            plan.kasumi_count(),
+            plan.kasumi_fallback_ids().len()
         );
         let mut final_magic_ids: BTreeSet<String> = plan.magic_module_ids.iter().cloned().collect();
         let mut final_overlay_ids: BTreeSet<String> = BTreeSet::new();
@@ -155,6 +145,8 @@ impl Executor {
         }
 
         #[cfg(feature = "kasumi")]
+        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_available);
+        #[cfg(feature = "kasumi")]
         let final_kasumi_ids = plan.kasumi_module_ids.clone();
         #[cfg(feature = "kasumi")]
         let kasumi_runtime_enabled = if config.kasumi.enabled {
@@ -176,8 +168,6 @@ impl Executor {
             );
             false
         };
-        #[cfg(feature = "kasumi")]
-        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_runtime_enabled);
         #[cfg(not(feature = "kasumi"))]
         let kasumi_runtime_enabled = false;
 
@@ -254,23 +244,28 @@ impl Executor {
             crate::scoped_log!(
                 info,
                 "executor",
-                "magic apply: modules={}",
-                magic_need_list.join(", ")
+                "magic apply: modules={}, kasumi_fallback_modules={}",
+                magic_need_list.join(", "),
+                plan.kasumi_fallback_ids().len()
             );
-            let (mounted_ids, magic_stats) =
-                magic::mount_magic(modules, &magic_need_list, config, tempdir.as_ref()).map_err(
-                    |err| {
-                        ModuleStageFailure::new(
-                            FailureStage::Execute,
-                            magic_need_list.clone(),
-                            anyhow::anyhow!(
-                                "Failed to mount Magic Mount modules [{}]: {:#}",
-                                magic_need_list.join(", "),
-                                err
-                            ),
-                        )
-                    },
-                )?;
+            let (mounted_ids, magic_stats) = magic::mount_magic(
+                modules,
+                &magic_need_list,
+                plan.kasumi_fallback_ids(),
+                config,
+                tempdir.as_ref(),
+            )
+            .map_err(|err| {
+                ModuleStageFailure::new(
+                    FailureStage::Execute,
+                    magic_need_list.clone(),
+                    anyhow::anyhow!(
+                        "Failed to mount Magic Mount modules [{}]: {:#}",
+                        magic_need_list.join(", "),
+                        err
+                    ),
+                )
+            })?;
             mount_stats.merge(&magic_stats);
             let mounted_ids: BTreeSet<String> = mounted_ids.into_iter().collect();
             final_magic_ids.retain(|id| mounted_ids.contains(id));
