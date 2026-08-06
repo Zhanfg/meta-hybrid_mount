@@ -6,11 +6,9 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(feature = "kasumi"))]
-use crate::domain::MountMode;
 use crate::{
     defs,
-    domain::{DefaultMode, ModuleRules},
+    domain::{DefaultMode, ModuleRules, MountMode},
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -90,6 +88,7 @@ pub struct KasumiConfig {
     pub mirror_path: PathBuf,
     pub enable_kernel_debug: bool,
     pub enable_stealth: bool,
+    #[serde(alias = "enable_hidexattr")]
     pub enable_overlay_xattr_hide: bool,
     pub enable_mount_hide: bool,
     pub enable_maps_spoof: bool,
@@ -170,23 +169,44 @@ pub struct Config {
 }
 
 impl Config {
+    /// Disable Kasumi for the in-memory configuration and preserve mount
+    /// coverage by converting every Kasumi strategy to Magic Mount.
+    ///
+    /// The caller decides whether this transient configuration is persisted.
+    /// Startup uses it only for the current boot, so a missing/incompatible LKM
+    /// cannot prevent unrelated Overlay and Magic modules from mounting.
+    pub(crate) fn degrade_kasumi_to_magic(&mut self) -> usize {
+        let mut changed = 0;
+
+        if self.kasumi.enabled {
+            self.kasumi.enabled = false;
+            changed += 1;
+        }
+        if matches!(self.default_mode, DefaultMode::Kasumi) {
+            self.default_mode = DefaultMode::Magic;
+            changed += 1;
+        }
+        for rules in self.rules.values_mut() {
+            if matches!(rules.default_mode, MountMode::Kasumi) {
+                rules.default_mode = MountMode::Magic;
+                changed += 1;
+            }
+            for mode in rules.paths.values_mut() {
+                if matches!(mode, MountMode::Kasumi) {
+                    *mode = MountMode::Magic;
+                    changed += 1;
+                }
+            }
+        }
+
+        changed
+    }
+
     pub(crate) fn sanitize_disabled_features(&mut self) {
         #[cfg(not(feature = "kasumi"))]
         {
+            self.degrade_kasumi_to_magic();
             self.kasumi = KasumiConfig::default();
-            if matches!(self.default_mode, DefaultMode::Kasumi) {
-                self.default_mode = DefaultMode::Magic;
-            }
-            for rules in self.rules.values_mut() {
-                if matches!(rules.default_mode, MountMode::Kasumi) {
-                    rules.default_mode = MountMode::Magic;
-                }
-                for mode in rules.paths.values_mut() {
-                    if matches!(mode, MountMode::Kasumi) {
-                        *mode = MountMode::Magic;
-                    }
-                }
-            }
         }
     }
 }
@@ -216,5 +236,53 @@ impl Default for Config {
             custom_mounts: Vec::new(),
             module_blacklist: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn degrade_kasumi_to_magic_preserves_mount_coverage() {
+        let mut config = Config {
+            default_mode: DefaultMode::Kasumi,
+            kasumi: KasumiConfig {
+                enabled: true,
+                ..KasumiConfig::default()
+            },
+            ..Config::default()
+        };
+        config.rules.insert(
+            "example".to_string(),
+            ModuleRules {
+                default_mode: MountMode::Kasumi,
+                paths: HashMap::from([
+                    ("system/app".to_string(), MountMode::Kasumi),
+                    ("system/lib".to_string(), MountMode::Overlay),
+                ]),
+            },
+        );
+
+        assert_eq!(config.degrade_kasumi_to_magic(), 4);
+        assert!(!config.kasumi.enabled);
+        assert!(matches!(config.default_mode, DefaultMode::Magic));
+        let rules = config.rules.get("example").unwrap();
+        assert!(matches!(rules.default_mode, MountMode::Magic));
+        assert!(matches!(
+            rules.paths.get("system/app"),
+            Some(MountMode::Magic)
+        ));
+        assert!(matches!(
+            rules.paths.get("system/lib"),
+            Some(MountMode::Overlay)
+        ));
+    }
+
+    #[test]
+    fn legacy_hidexattr_name_maps_to_current_field() {
+        let config: KasumiConfig = toml::from_str("enable_hidexattr = true").unwrap();
+
+        assert!(config.enable_overlay_xattr_hide);
     }
 }
