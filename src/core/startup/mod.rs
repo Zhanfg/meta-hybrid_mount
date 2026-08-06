@@ -8,6 +8,68 @@ use anyhow::{Context, Result};
 use crate::{conf::cli::Cli, core::daemon};
 use crate::{conf::loader, defs, sys, utils};
 
+#[cfg(feature = "kasumi")]
+struct KasumiLkmBootGuard {
+    config: crate::conf::schema::KasumiConfig,
+    armed: bool,
+}
+
+#[cfg(feature = "kasumi")]
+impl KasumiLkmBootGuard {
+    fn new(config: crate::conf::schema::KasumiConfig) -> Self {
+        Self {
+            config,
+            armed: false,
+        }
+    }
+
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    fn is_armed(&self) -> bool {
+        self.armed
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn unload_now(&mut self) -> Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
+
+        sys::lkm::unload(&self.config)
+            .context("Failed to unload Kasumi LKM owned by the current boot transaction")?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "kasumi")]
+impl Drop for KasumiLkmBootGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        match sys::lkm::unload(&self.config) {
+            Ok(()) => crate::scoped_log!(
+                warn,
+                "startup",
+                "Kasumi LKM unloaded after boot transaction failure"
+            ),
+            Err(error) => crate::scoped_log!(
+                error,
+                "startup",
+                "Kasumi LKM rollback incomplete after boot transaction failure: error={:#}",
+                error
+            ),
+        }
+    }
+}
+
 #[cfg(feature = "control-plane")]
 pub fn run(cli: &Cli) -> Result<()> {
     run_mount(cli).map(|_| ())
@@ -55,6 +117,8 @@ where
     };
     #[cfg(feature = "kasumi")]
     let mut config = config;
+    #[cfg(feature = "kasumi")]
+    let mut lkm_guard = KasumiLkmBootGuard::new(config.kasumi.clone());
 
     #[cfg(feature = "kasumi")]
     if config.kasumi.enabled {
@@ -63,6 +127,7 @@ where
         match sys::lkm::autoload_if_needed(&config.kasumi) {
             Ok(loaded) => {
                 if loaded {
+                    lkm_guard.arm();
                     crate::scoped_log!(
                         info,
                         "startup",
@@ -106,6 +171,12 @@ where
         }
 
         if !kasumi_ready {
+            if lkm_guard.is_armed() {
+                lkm_guard
+                    .unload_now()
+                    .context("Failed to remove unusable Kasumi LKM before Magic fallback")?;
+            }
+
             let changed = config.degrade_kasumi_to_magic();
             crate::scoped_log!(
                 warn,
@@ -133,6 +204,9 @@ where
         .context("Failed to execute mount plan")?
         .finalize()
         .context("Failed to finalize boot sequence")?;
+
+    #[cfg(feature = "kasumi")]
+    lkm_guard.disarm();
 
     Ok(config)
 }
