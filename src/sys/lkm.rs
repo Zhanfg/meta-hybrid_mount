@@ -41,7 +41,6 @@ pub struct LkmStatus {
 struct ManagedLkmSession {
     module_name: String,
     module_file: PathBuf,
-    kmi: String,
 }
 
 static MANAGED_LKM_SESSION: OnceLock<Mutex<Option<ManagedLkmSession>>> = OnceLock::new();
@@ -215,9 +214,11 @@ fn managed_module_name() -> Result<Option<String>> {
     let session = managed_session()
         .lock()
         .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?;
-    Ok(session_manages_loaded_module(session.as_ref(), loaded.as_deref()).then_some(
-        loaded.expect("managed session match requires a loaded module"),
-    ))
+    if session_manages_loaded_module(session.as_ref(), loaded.as_deref()) {
+        Ok(loaded)
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn is_loaded() -> Result<bool> {
@@ -259,11 +260,8 @@ fn load_module_via_finit(ko_path: &Path, params: &str) -> Result<()> {
 
     let ret = unsafe { libc::syscall(SYS_FINIT_MODULE_NUM, file.as_raw_fd(), params.as_ptr(), 0) };
     if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EEXIST) {
-            return Ok(());
-        }
-        return Err(err).with_context(|| format!("finit_module failed for {}", ko_path.display()));
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("finit_module failed for {}", ko_path.display()));
     }
 
     Ok(())
@@ -398,9 +396,8 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
 
     let module_name = loaded_module_name()?.context("Kasumi LKM load returned without a module entry")?;
     if module_name != defs::KASUMI_LKM_MODULE_NAME {
-        let _ = unload_module_via_syscall(&module_name);
         bail!(
-            "loaded unexpected Kasumi module name {module_name}; expected {}",
+            "loaded unexpected Kasumi module name {module_name}; expected {}; refusing automatic unload because ownership cannot be proven",
             defs::KASUMI_LKM_MODULE_NAME
         );
     }
@@ -420,11 +417,24 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
         };
     }
 
-    record_managed_session(ManagedLkmSession {
+    let session = ManagedLkmSession {
         module_name: module_name.clone(),
         module_file: ko_path.clone(),
-        kmi: kmi.clone(),
-    })?;
+    };
+    if let Err(record_error) = record_managed_session(session) {
+        let cleanup_error = cleanup_runtime_before_unload().err();
+        let _ = kasumi::release_connection();
+        let unload_error = unload_module_via_syscall(&module_name).err();
+        bail!(
+            "Kasumi LKM loaded but ownership registration failed: register={record_error:#}; cleanup={}; unload={}",
+            cleanup_error
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "ok".to_string()),
+            unload_error
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "ok".to_string())
+        );
+    }
 
     crate::scoped_log!(
         info,
@@ -481,12 +491,21 @@ pub fn unload(_config: &KasumiConfig) -> Result<()> {
 }
 
 pub fn autoload_if_needed(config: &KasumiConfig) -> Result<bool> {
-    if !config.enabled
-        || !config.lkm_autoload
-        || kasumi::can_operate()?
-        || is_loaded()?
-        || kasumi::check_status()? == kasumi::KasumiStatus::KernelNotSupported
-    {
+    if !config.enabled || !config.lkm_autoload {
+        return Ok(false);
+    }
+    if kasumi::can_operate()? {
+        return Ok(false);
+    }
+    if is_loaded()? {
+        kasumi::invalidate_status_cache()?;
+        let status = kasumi::check_status()?;
+        bail!(
+            "Kasumi autoload found a loaded but inoperable module (status={})",
+            kasumi::status_name(status)
+        );
+    }
+    if kasumi::check_status()? == kasumi::KasumiStatus::KernelNotSupported {
         return Ok(false);
     }
 
@@ -496,11 +515,12 @@ pub fn autoload_if_needed(config: &KasumiConfig) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         ManagedLkmSession, loaded_module_name_from_proc_modules, parse_kmi_from_release,
         session_manages_loaded_module,
     };
-    use std::path::PathBuf;
 
     #[test]
     fn parses_gki_release() {
@@ -543,7 +563,6 @@ mod tests {
         let session = ManagedLkmSession {
             module_name: "kasumi_lkm".to_string(),
             module_file: PathBuf::from("/tmp/kasumi_lkm.ko"),
-            kmi: "android15-6.6".to_string(),
         };
 
         assert!(session_manages_loaded_module(
