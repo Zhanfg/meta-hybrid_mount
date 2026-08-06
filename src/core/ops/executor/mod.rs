@@ -71,28 +71,89 @@ impl Drop for KasumiRuntimeGuard {
         if !self.armed {
             return;
         }
-        if let Err(error) = crate::sys::kasumi::set_enabled(false) {
-            crate::scoped_log!(
-                error,
-                "executor",
-                "Kasumi rollback disable failed: error={:#}",
-                error
-            );
+
+        fn record(errors: &mut Vec<String>, operation: &str, result: Result<()>) {
+            if let Err(error) = result {
+                errors.push(format!("{operation}: {error:#}"));
+            }
         }
-        if let Err(error) = crate::sys::kasumi::clear_rules() {
+
+        let mut errors = Vec::new();
+        record(
+            &mut errors,
+            "disable runtime",
+            crate::sys::kasumi::set_enabled(false),
+        );
+        record(
+            &mut errors,
+            "clear mount rules",
+            crate::sys::kasumi::clear_rules(),
+        );
+        record(
+            &mut errors,
+            "clear maps rules",
+            crate::sys::kasumi::clear_maps_rules(),
+        );
+        record(
+            &mut errors,
+            "disable debug",
+            crate::sys::kasumi::set_debug(false),
+        );
+        record(
+            &mut errors,
+            "disable stealth",
+            crate::sys::kasumi::set_stealth(false),
+        );
+        record(
+            &mut errors,
+            "disable mount hide",
+            crate::sys::kasumi::set_mount_hide(false),
+        );
+        record(
+            &mut errors,
+            "disable maps spoof",
+            crate::sys::kasumi::set_maps_spoof(false),
+        );
+        record(
+            &mut errors,
+            "disable statfs spoof",
+            crate::sys::kasumi::set_statfs_spoof(false),
+        );
+        record(
+            &mut errors,
+            "disable selinux fix",
+            crate::sys::kasumi::set_selinux_fix(false),
+        );
+        record(
+            &mut errors,
+            "clear hidden uids",
+            crate::sys::kasumi::set_hide_uids(&[]),
+        );
+        record(
+            &mut errors,
+            "clear cmdline spoof",
+            crate::sys::kasumi::set_cmdline_str(""),
+        );
+        let empty_uname = crate::sys::kasumi::KasumiSpoofUname::default();
+        record(
+            &mut errors,
+            "clear scoped uname spoof",
+            crate::sys::kasumi::set_uname(&empty_uname),
+        );
+        record(
+            &mut errors,
+            "clear global uname spoof",
+            crate::sys::kasumi::restore_uname_global(),
+        );
+
+        if errors.is_empty() {
+            crate::scoped_log!(warn, "executor", "Kasumi runtime rolled back after failure");
+        } else {
             crate::scoped_log!(
                 error,
                 "executor",
-                "Kasumi rollback rule cleanup failed: error={:#}",
-                error
-            );
-        }
-        if let Err(error) = crate::sys::kasumi::clear_maps_rules() {
-            crate::scoped_log!(
-                error,
-                "executor",
-                "Kasumi rollback maps cleanup failed: error={:#}",
-                error
+                "Kasumi rollback incomplete: failures={}",
+                errors.join(" | ")
             );
         }
     }
@@ -113,10 +174,11 @@ impl Executor {
         crate::scoped_log!(
             info,
             "executor",
-            "start: overlay_ops={}, preselected_magic_modules={}, preselected_kasumi_modules={}",
+            "start: overlay_ops={}, preselected_magic_modules={}, preselected_kasumi_modules={}, kasumi_fallback_modules={}",
             plan.overlay_ops.len(),
             plan.magic_module_ids.len(),
-            plan.kasumi_count()
+            plan.kasumi_count(),
+            plan.kasumi_fallback_ids().len()
         );
         let mut final_magic_ids: BTreeSet<String> = plan.magic_module_ids.iter().cloned().collect();
         let mut final_overlay_ids: BTreeSet<String> = BTreeSet::new();
@@ -155,6 +217,8 @@ impl Executor {
         }
 
         #[cfg(feature = "kasumi")]
+        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_available);
+        #[cfg(feature = "kasumi")]
         let final_kasumi_ids = plan.kasumi_module_ids.clone();
         #[cfg(feature = "kasumi")]
         let kasumi_runtime_enabled = if config.kasumi.enabled {
@@ -176,8 +240,6 @@ impl Executor {
             );
             false
         };
-        #[cfg(feature = "kasumi")]
-        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_runtime_enabled);
         #[cfg(not(feature = "kasumi"))]
         let kasumi_runtime_enabled = false;
 
@@ -254,23 +316,28 @@ impl Executor {
             crate::scoped_log!(
                 info,
                 "executor",
-                "magic apply: modules={}",
-                magic_need_list.join(", ")
+                "magic apply: modules={}, kasumi_fallback_modules={}",
+                magic_need_list.join(", "),
+                plan.kasumi_fallback_ids().len()
             );
-            let (mounted_ids, magic_stats) =
-                magic::mount_magic(modules, &magic_need_list, config, tempdir.as_ref()).map_err(
-                    |err| {
-                        ModuleStageFailure::new(
-                            FailureStage::Execute,
-                            magic_need_list.clone(),
-                            anyhow::anyhow!(
-                                "Failed to mount Magic Mount modules [{}]: {:#}",
-                                magic_need_list.join(", "),
-                                err
-                            ),
-                        )
-                    },
-                )?;
+            let (mounted_ids, magic_stats) = magic::mount_magic(
+                modules,
+                &magic_need_list,
+                plan.kasumi_fallback_ids(),
+                config,
+                tempdir.as_ref(),
+            )
+            .map_err(|err| {
+                ModuleStageFailure::new(
+                    FailureStage::Execute,
+                    magic_need_list.clone(),
+                    anyhow::anyhow!(
+                        "Failed to mount Magic Mount modules [{}]: {:#}",
+                        magic_need_list.join(", "),
+                        err
+                    ),
+                )
+            })?;
             mount_stats.merge(&magic_stats);
             let mounted_ids: BTreeSet<String> = mounted_ids.into_iter().collect();
             final_magic_ids.retain(|id| mounted_ids.contains(id));
@@ -297,15 +364,8 @@ impl Executor {
         }
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        if !config.disable_umount
-            && let Err(error) = umount_mgr::commit()
-        {
-            crate::scoped_log!(
-                warn,
-                "executor",
-                "umountable mount-list commit failed after successful mounts: error={:#}",
-                error
-            );
+        if !config.disable_umount {
+            umount_mgr::commit().context("Failed to commit umountable mount list")?;
         }
 
         let result_overlay: Vec<String> = final_overlay_ids.into_iter().collect();
