@@ -49,6 +49,8 @@ pub struct MountPlan {
     pub magic_module_ids: Vec<String>,
     #[cfg(feature = "kasumi")]
     pub kasumi_module_ids: Vec<String>,
+    #[cfg(feature = "kasumi")]
+    pub kasumi_fallback_module_ids: Vec<String>,
 }
 
 impl MountPlan {
@@ -63,11 +65,28 @@ impl MountPlan {
         }
     }
 
+    pub fn kasumi_fallback_ids(&self) -> &[String] {
+        #[cfg(feature = "kasumi")]
+        {
+            &self.kasumi_fallback_module_ids
+        }
+        #[cfg(not(feature = "kasumi"))]
+        {
+            &[]
+        }
+    }
+
     #[cfg(feature = "kasumi")]
     pub fn degrade_kasumi_to_magic(&mut self) -> usize {
-        let mut downgraded = std::mem::take(&mut self.kasumi_module_ids);
+        let downgraded = std::mem::take(&mut self.kasumi_module_ids);
         let changed = downgraded.len();
-        self.magic_module_ids.append(&mut downgraded);
+
+        self.kasumi_fallback_module_ids
+            .extend(downgraded.iter().cloned());
+        self.kasumi_fallback_module_ids.sort();
+        self.kasumi_fallback_module_ids.dedup();
+
+        self.magic_module_ids.extend(downgraded);
         self.magic_module_ids.sort();
         self.magic_module_ids.dedup();
         self.kasumi_add_rules.clear();
@@ -103,9 +122,27 @@ mod tests {
 
         assert_eq!(plan.degrade_kasumi_to_magic(), 3);
         assert_eq!(plan.magic_module_ids, vec!["a", "b", "existing"]);
+        assert_eq!(
+            plan.kasumi_fallback_module_ids,
+            vec!["a", "b", "existing"]
+        );
         assert!(plan.kasumi_module_ids.is_empty());
         assert!(plan.kasumi_add_rules.is_empty());
         assert!(plan.kasumi_merge_rules.is_empty());
         assert!(plan.kasumi_hide_rules.is_empty());
+    }
+
+    #[test]
+    fn repeated_downgrade_keeps_fallback_ids_stable() {
+        let mut plan = MountPlan {
+            kasumi_module_ids: vec!["module".to_string()],
+            ..MountPlan::default()
+        };
+
+        assert_eq!(plan.degrade_kasumi_to_magic(), 1);
+        plan.kasumi_module_ids.push("module".to_string());
+        assert_eq!(plan.degrade_kasumi_to_magic(), 1);
+        assert_eq!(plan.magic_module_ids, vec!["module"]);
+        assert_eq!(plan.kasumi_fallback_module_ids, vec!["module"]);
     }
 }
