@@ -115,37 +115,34 @@ jobs:
               "}\n",
           )
 
-          text += """
-
-#[cfg(test)]
-mod protocol_compat_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_protocol_16_baseline_and_protocol_17_current() {
-        assert_eq!(
-            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION),
-            KasumiStatus::Available
-        );
-        assert_eq!(
-            classify_protocol_version(KSM_PROTOCOL_VERSION),
-            KasumiStatus::Available
-        );
-    }
-
-    #[test]
-    fn rejects_protocols_outside_the_supported_range() {
-        assert_eq!(
-            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION - 1),
-            KasumiStatus::KernelNotSupported
-        );
-        assert_eq!(
-            classify_protocol_version(KSM_PROTOCOL_VERSION + 1),
-            KasumiStatus::ModuleTooOld
-        );
-    }
-}
-"""
+          text += (
+              "\n#[cfg(test)]\n"
+              "mod protocol_compat_tests {\n"
+              "    use super::*;\n\n"
+              "    #[test]\n"
+              "    fn accepts_protocol_16_baseline_and_protocol_17_current() {\n"
+              "        assert_eq!(\n"
+              "            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION),\n"
+              "            KasumiStatus::Available\n"
+              "        );\n"
+              "        assert_eq!(\n"
+              "            classify_protocol_version(KSM_PROTOCOL_VERSION),\n"
+              "            KasumiStatus::Available\n"
+              "        );\n"
+              "    }\n\n"
+              "    #[test]\n"
+              "    fn rejects_protocols_outside_the_supported_range() {\n"
+              "        assert_eq!(\n"
+              "            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION - 1),\n"
+              "            KasumiStatus::KernelNotSupported\n"
+              "        );\n"
+              "        assert_eq!(\n"
+              "            classify_protocol_version(KSM_PROTOCOL_VERSION + 1),\n"
+              "            KasumiStatus::ModuleTooOld\n"
+              "        );\n"
+              "    }\n"
+              "}\n"
+          )
 
           path.write_text(text)
           PY
