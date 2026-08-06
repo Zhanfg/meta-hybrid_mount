@@ -78,7 +78,8 @@ fn managed_session() -> &'static Mutex<Option<ManagedLkmSession>> {
 fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
     *managed_session()
         .lock()
-        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? = Some(session);
+        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? =
+        Some(session);
     Ok(())
 }
 
@@ -298,7 +299,8 @@ fn record_cleanup_error(errors: &mut Vec<String>, operation: &str, result: Resul
 }
 
 fn cleanup_runtime_before_unload() -> Result<()> {
-    let features = kasumi::get_features().context("failed to query Kasumi features before unload")?;
+    let features =
+        kasumi::get_features().context("failed to query Kasumi features before unload")?;
     let mut errors = Vec::new();
 
     record_cleanup_error(&mut errors, "disable runtime", kasumi::set_enabled(false));
@@ -394,7 +396,8 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
     load_module_via_finit(&ko_path, "")?;
     kasumi::invalidate_status_cache()?;
 
-    let module_name = loaded_module_name()?.context("Kasumi LKM load returned without a module entry")?;
+    let module_name =
+        loaded_module_name()?.context("Kasumi LKM load returned without a module entry")?;
     if module_name != defs::KASUMI_LKM_MODULE_NAME {
         bail!(
             "loaded unexpected Kasumi module name {module_name}; expected {}; refusing automatic unload because ownership cannot be proven",
