@@ -77,6 +77,13 @@ fn apply_one(mount: &CustomBindMount, disable_umount: bool) -> Result<AppliedCus
     })
 }
 
+fn target_is_forbidden(target: &Path) -> bool {
+    target == Path::new("/")
+        || ["/proc", "/sys", "/dev", "/mnt", "/storage", "/data/adb"]
+            .into_iter()
+            .any(|root| target.starts_with(root))
+}
+
 fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> {
     if !source.is_absolute() {
         bail!("custom bind source must be an absolute path");
@@ -87,6 +94,12 @@ fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> 
     if source == target {
         bail!("custom bind source and target must differ");
     }
+    if target_is_forbidden(target) {
+        bail!(
+            "custom bind target is inside a protected runtime root: {}",
+            target.display()
+        );
+    }
 
     let source_meta = fs::metadata(source)
         .with_context(|| format!("failed to inspect source {}", source.display()))?;
@@ -94,8 +107,33 @@ fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> 
         .with_context(|| format!("failed to inspect target {}", target.display()))?;
 
     match (source_meta.is_dir(), target_meta.is_dir()) {
-        (true, true) => Ok(CustomBindKind::Directory),
-        (false, false) => Ok(CustomBindKind::File),
+        (true, true) => {
+            let source_real = fs::canonicalize(source)
+                .with_context(|| format!("failed to resolve source {}", source.display()))?;
+            let target_real = fs::canonicalize(target)
+                .with_context(|| format!("failed to resolve target {}", target.display()))?;
+            if source_real == target_real
+                || source_real.starts_with(&target_real)
+                || target_real.starts_with(&source_real)
+            {
+                bail!(
+                    "custom bind directory trees must not overlap: {} -> {}",
+                    source.display(),
+                    target.display()
+                );
+            }
+            Ok(CustomBindKind::Directory)
+        }
+        (false, false) => {
+            let source_real = fs::canonicalize(source)
+                .with_context(|| format!("failed to resolve source {}", source.display()))?;
+            let target_real = fs::canonicalize(target)
+                .with_context(|| format!("failed to resolve target {}", target.display()))?;
+            if source_real == target_real {
+                bail!("custom bind source and target resolve to the same file");
+            }
+            Ok(CustomBindKind::File)
+        }
         (true, false) => bail!("custom bind source is a directory but target is not"),
         (false, true) => bail!("custom bind source is not a directory but target is"),
     }
@@ -180,6 +218,22 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_protected_targets_before_filesystem_access() {
+        assert!(validate_mount_paths(Path::new("/missing-source"), Path::new("/")).is_err());
+        assert!(
+            validate_mount_paths(
+                Path::new("/missing-source"),
+                Path::new("/data/adb/modules/hybrid_mount")
+            )
+            .is_err()
+        );
+        assert!(
+            validate_mount_paths(Path::new("/missing-source"), Path::new("/proc/sys"))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn validate_rejects_type_mismatch() {
         let temp = tempfile::tempdir().unwrap();
         let source_dir = temp.path().join("source");
@@ -188,6 +242,17 @@ mod tests {
         fs::write(&target_file, b"").unwrap();
 
         assert!(validate_mount_paths(&source_dir, &target_file).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_overlapping_directory_trees() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = source.join("target");
+        fs::create_dir_all(&target).unwrap();
+
+        assert!(validate_mount_paths(&source, &target).is_err());
+        assert!(validate_mount_paths(&target, &source).is_err());
     }
 
     #[test]
