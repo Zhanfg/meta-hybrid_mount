@@ -201,9 +201,39 @@ fn finalize_mount_setup(path: &Path, disable_umount: bool) -> Result<()> {
 }
 
 #[cfg(feature = "control-plane")]
+fn probe_tmpfs_overlay_xattr(target: &Path) -> Result<bool> {
+    let probe = tempfile::Builder::new()
+        .prefix(".hybrid-mount-xattr-probe-")
+        .tempdir_in(target)
+        .with_context(|| {
+            format!(
+                "failed to create tmpfs xattr probe directory under {}",
+                target.display()
+            )
+        })?;
+
+    match crate::sys::fs::set_overlay_opaque(probe.path()) {
+        Ok(()) => {
+            crate::sys::fs::remember_overlay_xattr_supported();
+            Ok(true)
+        }
+        Err(error) => {
+            crate::scoped_log!(
+                warn,
+                "storage",
+                "live tmpfs OverlayFS xattr probe failed: path={}, error={:#}",
+                probe.path().display(),
+                error
+            );
+            Ok(false)
+        }
+    }
+}
+
+#[cfg(feature = "control-plane")]
 fn setup_tmpfs(target: &Path, mount_source: &str) -> Result<()> {
     crate::sys::mount::mount_tmpfs(target, mount_source)?;
-    match crate::sys::fs::is_overlay_xattr_supported() {
+    match probe_tmpfs_overlay_xattr(target) {
         Ok(true) => Ok(()),
         Ok(false) => {
             detach_existing_mount(target)?;
