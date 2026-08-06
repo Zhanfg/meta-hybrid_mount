@@ -32,9 +32,33 @@ pub fn finalize(
         result.kasumi_count()
     );
 
-    let state =
-        RuntimeState::build_from_execution(config, storage_mode, mount_point, result, inventory)?;
-    state.save()?;
+    let state = match RuntimeState::build_from_execution(
+        config,
+        storage_mode,
+        mount_point,
+        result,
+        inventory,
+    ) {
+        Ok(state) => state,
+        Err(error) => {
+            crate::scoped_log!(
+                warn,
+                "runtime_finalization",
+                "mounts are active but runtime state collection failed: error={:#}",
+                error
+            );
+            return Ok(());
+        }
+    };
+
+    if let Err(error) = state.save() {
+        crate::scoped_log!(
+            warn,
+            "runtime_finalization",
+            "mounts are active but runtime state persistence failed: error={:#}",
+            error
+        );
+    }
 
     crate::scoped_log!(
         info,

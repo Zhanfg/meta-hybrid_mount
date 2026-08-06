@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 #[cfg(any(target_os = "linux", target_os = "android"))]
-use rustix::mount::{MountFlags, mount_bind, mount_remount};
+use rustix::mount::{MountFlags, UnmountFlags, mount_bind, mount_remount, unmount};
 
 use crate::conf::schema::CustomBindMount;
 
@@ -33,13 +33,26 @@ pub fn apply_custom_bind_mounts(
     let mut applied_mounts = Vec::with_capacity(mounts.len());
 
     for mount in mounts {
-        let applied = apply_one(mount, disable_umount).with_context(|| {
+        let applied = match apply_one(mount, disable_umount).with_context(|| {
             format!(
                 "failed to apply custom bind {} -> {}",
                 mount.source.display(),
                 mount.target.display()
             )
-        })?;
+        }) {
+            Ok(applied) => applied,
+            Err(error) => {
+                let rollback_errors = rollback_applied_mounts(&applied_mounts);
+                if rollback_errors.is_empty() {
+                    return Err(error);
+                }
+                bail!(
+                    "custom bind application failed and previous mounts could not be fully rolled back: error={:#}; rollback_errors={}",
+                    error,
+                    rollback_errors.join(" | ")
+                );
+            }
+        };
         crate::scoped_log!(
             info,
             "custom_bind",
@@ -98,23 +111,53 @@ fn bind_mount_checked(source: &Path, target: &Path, disable_umount: bool) -> Res
         )
     })?;
 
-    mount_remount(target, MountFlags::RDONLY | MountFlags::BIND, "").with_context(|| {
-        format!(
-            "failed to remount custom bind readonly: {}",
-            target.display()
-        )
-    })?;
-
-    if !disable_umount {
-        crate::mount::umount_mgr::send_umountable(target).with_context(|| {
+    if let Err(error) = mount_remount(target, MountFlags::RDONLY | MountFlags::BIND, "") {
+        let cleanup_error = unmount(target, UnmountFlags::DETACH).err();
+        if let Some(cleanup_error) = cleanup_error {
+            bail!(
+                "failed to remount custom bind readonly and rollback failed for {}: remount={:#}; rollback={:#}",
+                target.display(),
+                error,
+                cleanup_error
+            );
+        }
+        return Err(error).with_context(|| {
             format!(
-                "failed to register custom bind target as umountable: {}",
+                "failed to remount custom bind readonly: {}",
                 target.display()
             )
-        })?;
+        });
+    }
+
+    if !disable_umount && let Err(error) = crate::mount::umount_mgr::send_umountable(target) {
+        crate::scoped_log!(
+            warn,
+            "custom_bind",
+            "bind mounted but umount registration failed: target={}, error={:#}",
+            target.display(),
+            error
+        );
     }
 
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn rollback_applied_mounts(mounts: &[AppliedCustomBind]) -> Vec<String> {
+    mounts
+        .iter()
+        .rev()
+        .filter_map(|mount| {
+            unmount(&mount.target, UnmountFlags::DETACH)
+                .err()
+                .map(|error| format!("{}: {error:#}", mount.target.display()))
+        })
+        .collect()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn rollback_applied_mounts(_mounts: &[AppliedCustomBind]) -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]

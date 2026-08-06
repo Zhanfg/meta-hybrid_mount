@@ -280,12 +280,32 @@ impl MagicMount {
             )
         })?;
 
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        if self.umount {
-            send_umountable(target)?;
+        if let Err(error) = remount_readonly(target, target) {
+            let cleanup_error = unmount(target, UnmountFlags::DETACH).err();
+            if let Some(cleanup_error) = cleanup_error {
+                bail!(
+                    "failed to make bind mount readonly and rollback failed for {}: remount={:#}; rollback={:#}",
+                    target.display(),
+                    error,
+                    cleanup_error
+                );
+            }
+            return Err(error);
         }
 
-        remount_readonly(target, target)?;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if self.umount
+            && let Err(error) = send_umountable(target)
+        {
+            crate::scoped_log!(
+                warn,
+                "magic",
+                "file mounted but umount registration failed: target={}, error={:#}",
+                target.display(),
+                error
+            );
+        }
+
         context.stats.record_file();
         Ok(())
     }
@@ -421,8 +441,16 @@ impl MagicMount {
             .with_context(|| format!("failed to make mount private: {}", self.path.display()))?;
 
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            if self.umount {
-                send_umountable(&self.path)?;
+            if self.umount
+                && let Err(error) = send_umountable(&self.path)
+            {
+                crate::scoped_log!(
+                    warn,
+                    "magic",
+                    "directory mounted but umount registration failed: target={}, error={:#}",
+                    self.path.display(),
+                    error
+                );
             }
             context.stats.record_dir();
         }
@@ -576,8 +604,16 @@ where
             context.stats.ignored_entries
         );
 
+        if let Err(error) = cleanup_result {
+            crate::scoped_log!(
+                warn,
+                "magic",
+                "temporary workspace cleanup failed after mount execution: path={}, error={:#}",
+                tmp_dir.display(),
+                error
+            );
+        }
         ret?;
-        cleanup_result?;
         Ok((mounted_module_ids, context.stats))
     } else {
         crate::scoped_log!(info, "magic", "skip: reason=no_modules_to_mount");

@@ -33,8 +33,16 @@ fn mount_overlay_inner(
     kasumi: Option<&KasumiCoordinator<'_>>,
 ) -> Result<Vec<String>> {
     mount_overlay_base(op, config)?;
-    if let Some(kasumi) = kasumi {
-        kasumi.hide_overlay_xattrs(Path::new(&op.target))?;
+    if let Some(kasumi) = kasumi
+        && let Err(error) = kasumi.hide_overlay_xattrs(Path::new(&op.target))
+    {
+        crate::scoped_log!(
+            warn,
+            "executor:overlay",
+            "overlay mounted but Kasumi xattr hiding failed: target={}, error={:#}",
+            op.target,
+            error
+        );
     }
     Ok(super::collect_involved_modules(op))
 }
@@ -98,8 +106,16 @@ fn mount_overlay_base(op: &OverlayOperation, config: &config::Config) -> Result<
     );
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    if !config.disable_umount {
-        umount_mgr::send_umountable(&op.target)?;
+    if !config.disable_umount
+        && let Err(error) = umount_mgr::send_umountable(&op.target)
+    {
+        crate::scoped_log!(
+            warn,
+            "executor:overlay",
+            "overlay mounted but umount registration failed: target={}, error={:#}",
+            op.target,
+            error
+        );
     }
 
     Ok(())

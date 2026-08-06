@@ -236,20 +236,34 @@ impl MountController<Executed> {
     pub fn finalize(self) -> Result<()> {
         let started = Instant::now();
         crate::scoped_log!(info, "controller:finalize", "start");
-        runtime_finalization::finalize(
+        if let Err(error) = runtime_finalization::finalize(
             &self.config,
             self.state.handle.mode(),
             self.state.handle.mount_point(),
             &self.state.result,
             &self.state.inventory_summary,
-        )?;
+        ) {
+            crate::scoped_log!(
+                warn,
+                "controller:finalize",
+                "mounts are active but runtime finalization failed: error={:#}",
+                error
+            );
+        }
 
-        clean_up(
+        if let Err(error) = clean_up(
             &self.tempdir,
             &self.config.kasumi.mirror_path,
             self.state.handle.mode(),
             self.config.disable_umount,
-        )?;
+        ) {
+            crate::scoped_log!(
+                warn,
+                "controller:finalize",
+                "mounts are active but temporary cleanup failed: error={:#}",
+                error
+            );
+        }
 
         crate::scoped_log!(
             info,
