@@ -1,0 +1,35 @@
+name: Export 1838 Baseline
+
+on:
+  push:
+    branches:
+      - 'audit/triple-review-1838'
+    paths:
+      - '.github/workflows/export-baseline-1838.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify and export build 1838 source
+        run: |
+          set -euo pipefail
+          BASELINE=1b034a448f5952ea8930b191acabf7126b87b783
+          git cat-file -e "$BASELINE^{commit}"
+          git archive --format=tar.gz --prefix=hybrid-1838/ -o hybrid-1838.tar.gz "$BASELINE"
+          sha256sum hybrid-1838.tar.gz > hybrid-1838.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hybrid-1838-source
+          path: |
+            hybrid-1838.tar.gz
+            hybrid-1838.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
