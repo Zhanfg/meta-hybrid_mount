@@ -520,6 +520,7 @@ fn patched_config(config: &Config, patch: Value) -> Result<Config> {
     serde_json::from_value(payload).context("Failed to decode patched config")
 }
 
+#[cfg(test)]
 fn patch_config_file(config_path: &Path, patch: Value) -> Result<Config> {
     let current = Config::load_from_file(config_path)
         .with_context(|| format!("Failed to load config from path: {}", config_path.display()))?;
