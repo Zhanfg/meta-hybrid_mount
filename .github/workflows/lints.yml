@@ -23,7 +23,7 @@ jobs:
   lints-check:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/hybrid-mount/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -53,7 +53,7 @@ jobs:
   webui-lints:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/hybrid-mount/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
