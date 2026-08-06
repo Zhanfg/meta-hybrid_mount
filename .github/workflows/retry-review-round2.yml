@@ -24,19 +24,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re
           import textwrap
           from pathlib import Path
 
-          workflow = Path('.github/workflows/apply-review-round2.yml').read_text()
-          match = re.search(
-              r"python3 - <<'PY'\n(.*?)\n          PY\n\n      - name: Commit round-two fixes",
-              workflow,
-              re.DOTALL,
-          )
-          if not match:
-              raise SystemExit('round-two patch body not found')
-          Path('/tmp/apply_round2.py').write_text(textwrap.dedent(match.group(1)))
+          lines = Path('.github/workflows/apply-review-round2.yml').read_text().splitlines()
+          start = next(index for index, line in enumerate(lines) if line.strip() == "python3 - <<'PY'") + 1
+          end = next(index for index in range(start, len(lines)) if lines[index].strip() == 'PY')
+          script = textwrap.dedent('\n'.join(lines[start:end])) + '\n'
+          Path('/tmp/apply_round2.py').write_text(script)
           PY
 
           python3 /tmp/apply_round2.py
