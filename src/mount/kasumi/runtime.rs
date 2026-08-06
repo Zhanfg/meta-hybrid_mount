@@ -2,18 +2,26 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use super::{
     cleanup,
     common::{
-        effective_maps_spoof_enabled, effective_mount_hide_enabled, effective_selinux_fix_enabled,
-        effective_statfs_spoof_enabled, effective_stealth_enabled, feature_supported,
-        has_uname_spoof_config, to_c_long, to_c_ulong,
+        build_managed_partitions, effective_maps_spoof_enabled, effective_mount_hide_enabled,
+        effective_selinux_fix_enabled, effective_statfs_spoof_enabled,
+        effective_stealth_enabled, feature_supported, has_uname_spoof_config, to_c_long,
+        to_c_ulong,
     },
-    compile::{CompiledRules, compile_rules, log_compiled_rule_summary},
+    compile::{
+        CompiledRules, compile_rules, log_compiled_rule_summary, virtual_target_is_managed,
+    },
     status::{can_operate, hook_lines},
 };
 use crate::{
@@ -22,13 +30,14 @@ use crate::{
         schema::{self, KasumiUnameMode},
     },
     core::{
-        inventory::{self, Module},
+        inventory::Module,
         ops::plan::MountPlan,
         runtime_state::RuntimeState,
         user_hide_rules,
     },
     defs,
     sys::{
+        fs::atomic_write,
         kasumi::{
             self, KSM_FEATURE_CMDLINE_SPOOF, KSM_FEATURE_KSTAT_SPOOF, KSM_FEATURE_MAPS_SPOOF,
             KSM_FEATURE_MOUNT_HIDE, KSM_FEATURE_SELINUX_FIX, KSM_FEATURE_STATFS_SPOOF,
@@ -37,7 +46,18 @@ use crate::{
         },
         lkm,
     },
+    utils,
 };
+
+const RULE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KasumiRuleSnapshot {
+    schema_version: u32,
+    module_ids: Vec<String>,
+    mirror_path: PathBuf,
+    rules: CompiledRules,
+}
 
 fn mount_mapping_requested(plan: &MountPlan) -> bool {
     !plan.kasumi_module_ids.is_empty()
@@ -100,6 +120,65 @@ fn log_feature_summary(features: i32) {
     );
 }
 
+fn require_feature(
+    requested: bool,
+    features: i32,
+    required_feature: i32,
+    feature_name: &str,
+) -> Result<()> {
+    if requested && !feature_supported(features, required_feature) {
+        bail!("Kasumi feature {feature_name} is not supported by the kernel module");
+    }
+    Ok(())
+}
+
+fn validate_requested_feature_support(config: &config::Config, features: i32) -> Result<()> {
+    require_feature(
+        effective_mount_hide_enabled(config),
+        features,
+        KSM_FEATURE_MOUNT_HIDE,
+        "mount_hide",
+    )?;
+    require_feature(
+        effective_maps_spoof_enabled(config) || !config.kasumi.maps_rules.is_empty(),
+        features,
+        KSM_FEATURE_MAPS_SPOOF,
+        "maps_spoof",
+    )?;
+    require_feature(
+        effective_statfs_spoof_enabled(config),
+        features,
+        KSM_FEATURE_STATFS_SPOOF,
+        "statfs_spoof",
+    )?;
+    require_feature(
+        effective_selinux_fix_enabled(config),
+        features,
+        KSM_FEATURE_SELINUX_FIX,
+        "selinux_fix",
+    )?;
+    require_feature(
+        has_uname_spoof_config(config)
+            || matches!(config.kasumi.uname_mode, KasumiUnameMode::Global),
+        features,
+        KSM_FEATURE_UNAME_SPOOF,
+        "uname_spoof",
+    )?;
+    require_feature(
+        !config.kasumi.cmdline_value.is_empty(),
+        features,
+        KSM_FEATURE_CMDLINE_SPOOF,
+        "cmdline_spoof",
+    )?;
+    require_feature(
+        !config.kasumi.kstat_rules.is_empty(),
+        features,
+        KSM_FEATURE_KSTAT_SPOOF,
+        "kstat_spoof",
+    )?;
+    Ok(())
+}
+
 fn apply_runtime_switches(
     config: &config::Config,
     runtime_requested: bool,
@@ -117,16 +196,11 @@ fn apply_runtime_switches(
         kasumi::set_stealth(true)?;
     }
 
-    let mount_hide_enabled = effective_mount_hide_enabled(config);
-    if mount_hide_enabled {
-        if !feature_supported(features, KSM_FEATURE_MOUNT_HIDE) {
-            bail!("Kasumi mount_hide is not supported by the kernel module");
-        }
+    if effective_mount_hide_enabled(config) {
         apply_mount_hide_from_config(config)?;
     }
 
-    let maps_spoof_enabled = effective_maps_spoof_enabled(config);
-    if maps_spoof_enabled {
+    if effective_maps_spoof_enabled(config) {
         apply_feature_toggle(
             "maps_spoof",
             true,
@@ -136,18 +210,11 @@ fn apply_runtime_switches(
         )?;
     }
 
-    let statfs_spoof_enabled = effective_statfs_spoof_enabled(config);
-    if statfs_spoof_enabled {
-        if !feature_supported(features, KSM_FEATURE_STATFS_SPOOF) {
-            bail!("Kasumi statfs_spoof is not supported by the kernel module");
-        }
+    if effective_statfs_spoof_enabled(config) {
         apply_statfs_spoof_from_config(config)?;
     }
 
     let selinux_fix_enabled = effective_selinux_fix_enabled(config);
-    if selinux_fix_enabled && !feature_supported(features, KSM_FEATURE_SELINUX_FIX) {
-        bail!("Kasumi selinux_fix is not supported by the kernel module");
-    }
     if feature_supported(features, KSM_FEATURE_SELINUX_FIX) {
         kasumi::set_selinux_fix(selinux_fix_enabled)?;
     }
@@ -246,16 +313,10 @@ fn apply_spoof_settings(config: &config::Config, features: i32) -> Result<()> {
     let should_apply_uname =
         has_uname_config || matches!(config.kasumi.uname_mode, KasumiUnameMode::Global);
     if should_apply_uname {
-        if !feature_supported(features, KSM_FEATURE_UNAME_SPOOF) {
-            bail!("Kasumi uname_spoof is not supported by the kernel module");
-        }
         apply_uname_from_config(config)?;
     }
 
     if !config.kasumi.cmdline_value.is_empty() {
-        if !feature_supported(features, KSM_FEATURE_CMDLINE_SPOOF) {
-            bail!("Kasumi cmdline_spoof is not supported by the kernel module");
-        }
         kasumi::set_cmdline_str(&config.kasumi.cmdline_value)?;
     }
 
@@ -264,18 +325,12 @@ fn apply_spoof_settings(config: &config::Config, features: i32) -> Result<()> {
     }
 
     if !config.kasumi.kstat_rules.is_empty() {
-        if !feature_supported(features, KSM_FEATURE_KSTAT_SPOOF) {
-            bail!("Kasumi kstat rules are not supported by the kernel module");
-        }
         for rule in &config.kasumi.kstat_rules {
             apply_kstat_rule(rule)?;
         }
     }
 
     if !config.kasumi.maps_rules.is_empty() {
-        if !feature_supported(features, KSM_FEATURE_MAPS_SPOOF) {
-            bail!("Kasumi maps rules are not supported by the kernel module");
-        }
         for rule in &config.kasumi.maps_rules {
             let native_rule = KasumiMapsRule::new(
                 to_c_ulong(rule.target_ino, "target_ino")?,
@@ -326,59 +381,213 @@ pub fn reset_runtime(config: &config::Config) -> Result<bool> {
     Ok(true)
 }
 
-fn build_live_runtime_inputs(config: &config::Config) -> Result<(MountPlan, Vec<Module>)> {
-    let state = RuntimeState::load().context("failed to load current mount runtime state")?;
-    let mut active_module_ids = state.kasumi_modules;
-    active_module_ids.sort();
-    active_module_ids.dedup();
-    let active_ids: HashSet<String> = active_module_ids.iter().cloned().collect();
+fn normalize_module_ids(mut module_ids: Vec<String>) -> Vec<String> {
+    module_ids.sort();
+    module_ids.dedup();
+    module_ids
+}
 
-    let inventory = inventory::scan_snapshot(config)
-        .context("failed to scan modules for live Kasumi runtime rebuild")?;
-    let modules = inventory
-        .modules
-        .into_iter()
-        .filter(|module| active_ids.contains(&module.id))
-        .collect::<Vec<_>>();
+fn compiled_rules_from_plan(plan: &MountPlan) -> CompiledRules {
+    CompiledRules {
+        add_rules: plan.kasumi_add_rules.clone(),
+        merge_rules: plan.kasumi_merge_rules.clone(),
+        hide_rules: plan.kasumi_hide_rules.clone(),
+    }
+}
 
-    if modules.len() != active_ids.len() {
-        let found = modules
-            .iter()
-            .map(|module| module.id.as_str())
-            .collect::<HashSet<_>>();
-        let mut missing = active_module_ids
-            .iter()
-            .filter(|id| !found.contains(id.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        missing.sort();
+fn save_rule_snapshot(plan: &MountPlan, config: &config::Config) -> Result<()> {
+    let snapshot = KasumiRuleSnapshot {
+        schema_version: RULE_SNAPSHOT_SCHEMA_VERSION,
+        module_ids: normalize_module_ids(plan.kasumi_module_ids.clone()),
+        mirror_path: utils::normalize_path(&config.kasumi.mirror_path),
+        rules: compiled_rules_from_plan(plan),
+    };
+    let payload = serde_json::to_vec_pretty(&snapshot)
+        .context("failed to serialize Kasumi module rule snapshot")?;
+    atomic_write(defs::KASUMI_RULE_SNAPSHOT_FILE, payload).with_context(|| {
+        format!(
+            "failed to persist Kasumi module rule snapshot {}",
+            defs::KASUMI_RULE_SNAPSHOT_FILE
+        )
+    })
+}
+
+fn load_rule_snapshot() -> Result<KasumiRuleSnapshot> {
+    let payload = fs::read(defs::KASUMI_RULE_SNAPSHOT_FILE).with_context(|| {
+        format!(
+            "failed to read Kasumi module rule snapshot {}; reboot is required before live configuration changes",
+            defs::KASUMI_RULE_SNAPSHOT_FILE
+        )
+    })?;
+    let snapshot: KasumiRuleSnapshot = serde_json::from_slice(&payload)
+        .context("failed to parse Kasumi module rule snapshot; reboot is required")?;
+    if snapshot.schema_version != RULE_SNAPSHOT_SCHEMA_VERSION {
         bail!(
-            "live Kasumi runtime references modules missing from current inventory: {}",
-            missing.join(", ")
+            "unsupported Kasumi rule snapshot schema {}; expected {}; reboot is required",
+            snapshot.schema_version,
+            RULE_SNAPSHOT_SCHEMA_VERSION
         );
     }
+    Ok(snapshot)
+}
+
+fn validate_rule_target(target: &str, managed_partitions: &HashSet<String>) -> Result<()> {
+    let path = Path::new(target);
+    if !path.is_absolute() || utils::normalize_path(path) != path {
+        bail!("invalid persisted Kasumi target path: {target}");
+    }
+    if !virtual_target_is_managed(path, managed_partitions) {
+        bail!("persisted Kasumi target escaped managed partitions: {target}");
+    }
+    Ok(())
+}
+
+fn validate_add_source(source: &Path, mirror_root: &Path) -> Result<()> {
+    if !source.is_absolute() || !source.starts_with(mirror_root) {
+        bail!(
+            "persisted Kasumi ADD source escaped mirror root: source={}, mirror={}",
+            source.display(),
+            mirror_root.display()
+        );
+    }
+    fs::symlink_metadata(source)
+        .with_context(|| format!("persisted Kasumi ADD source is unavailable: {}", source.display()))?;
+    let parent = source
+        .parent()
+        .context("persisted Kasumi ADD source has no parent")?;
+    let resolved_parent = fs::canonicalize(parent).with_context(|| {
+        format!(
+            "failed to resolve persisted Kasumi ADD source parent {}",
+            parent.display()
+        )
+    })?;
+    if !resolved_parent.starts_with(mirror_root) {
+        bail!(
+            "persisted Kasumi ADD source parent escaped mirror root: source={}, resolved_parent={}, mirror={}",
+            source.display(),
+            resolved_parent.display(),
+            mirror_root.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_merge_source(source: &Path, mirror_root: &Path) -> Result<()> {
+    let resolved = fs::canonicalize(source).with_context(|| {
+        format!(
+            "failed to resolve persisted Kasumi MERGE source {}",
+            source.display()
+        )
+    })?;
+    if !resolved.is_dir() || !resolved.starts_with(mirror_root) {
+        bail!(
+            "persisted Kasumi MERGE source escaped mirror root or is not a directory: source={}, resolved={}, mirror={}",
+            source.display(),
+            resolved.display(),
+            mirror_root.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_file_type(file_type: i32) -> Result<()> {
+    let supported = [
+        libc::DT_UNKNOWN as i32,
+        libc::DT_REG as i32,
+        libc::DT_LNK as i32,
+        libc::DT_BLK as i32,
+        libc::DT_CHR as i32,
+        libc::DT_FIFO as i32,
+        libc::DT_SOCK as i32,
+    ];
+    if !supported.contains(&file_type) {
+        bail!("invalid persisted Kasumi file type: {file_type}");
+    }
+    Ok(())
+}
+
+fn validate_rule_snapshot(
+    snapshot: &KasumiRuleSnapshot,
+    active_module_ids: &[String],
+    config: &config::Config,
+) -> Result<()> {
+    if normalize_module_ids(snapshot.module_ids.clone()) != active_module_ids {
+        bail!(
+            "Kasumi rule snapshot module set does not match the current boot; reboot is required"
+        );
+    }
+
+    let configured_mirror = utils::normalize_path(&config.kasumi.mirror_path);
+    if snapshot.mirror_path != configured_mirror {
+        bail!(
+            "changing Kasumi mirror_path with active module rules requires a reboot: active={}, requested={}",
+            snapshot.mirror_path.display(),
+            configured_mirror.display()
+        );
+    }
+
+    let mirror_root = fs::canonicalize(&config.kasumi.mirror_path).with_context(|| {
+        format!(
+            "failed to resolve Kasumi mirror root {}",
+            config.kasumi.mirror_path.display()
+        )
+    })?;
+    let managed_partitions = build_managed_partitions(config);
+
+    for rule in &snapshot.rules.add_rules {
+        validate_rule_target(&rule.target, &managed_partitions)?;
+        validate_file_type(rule.file_type)?;
+        validate_add_source(&rule.source, &mirror_root)?;
+    }
+    for rule in &snapshot.rules.merge_rules {
+        validate_rule_target(&rule.target, &managed_partitions)?;
+        validate_merge_source(&rule.source, &mirror_root)?;
+    }
+    for target in &snapshot.rules.hide_rules {
+        validate_rule_target(target, &managed_partitions)?;
+    }
+
+    Ok(())
+}
+
+fn build_live_runtime_plan(config: &config::Config) -> Result<(MountPlan, CompiledRules)> {
+    let state = RuntimeState::load().context("failed to load current mount runtime state")?;
+    let active_module_ids = normalize_module_ids(state.kasumi_modules);
+
+    if active_module_ids.is_empty() {
+        return Ok((MountPlan::default(), CompiledRules::default()));
+    }
+
+    let snapshot = load_rule_snapshot()?;
+    validate_rule_snapshot(&snapshot, &active_module_ids, config)?;
 
     Ok((
         MountPlan {
             kasumi_module_ids: active_module_ids,
             ..MountPlan::default()
         },
-        modules,
+        snapshot.rules,
     ))
 }
 
 fn preflight_live_runtime(
+    snapshot_rules: &CompiledRules,
     plan: &MountPlan,
-    modules: &[Module],
     config: &config::Config,
 ) -> Result<()> {
     if mount_mapping_requested(plan) {
-        compile_rules(modules, plan, config)
-            .context("failed to precompile live Kasumi mount rules")?;
+        let snapshot = KasumiRuleSnapshot {
+            schema_version: RULE_SNAPSHOT_SCHEMA_VERSION,
+            module_ids: plan.kasumi_module_ids.clone(),
+            mirror_path: utils::normalize_path(&config.kasumi.mirror_path),
+            rules: snapshot_rules.clone(),
+        };
+        validate_rule_snapshot(&snapshot, &plan.kasumi_module_ids, config)?;
     }
     user_hide_rules::load_user_hide_rules()
         .context("failed to validate user hide rules before live rebuild")?;
-    Ok(())
+    let features = get_features()?;
+    validate_requested_feature_support(config, features)
 }
 
 pub fn apply_runtime_config(config: &config::Config) -> Result<bool> {
@@ -393,10 +602,10 @@ pub fn apply_runtime_config(config: &config::Config) -> Result<bool> {
         return Ok(false);
     }
 
-    let (mut plan, modules) = build_live_runtime_inputs(config)?;
-    preflight_live_runtime(&plan, &modules, config)?;
+    let (mut plan, snapshot_rules) = build_live_runtime_plan(config)?;
+    preflight_live_runtime(&snapshot_rules, &plan, config)?;
     reset_runtime(config)?;
-    apply(&mut plan, &modules, config)
+    apply_compiled(&mut plan, snapshot_rules, config)
 }
 
 pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) -> Result<bool> {
@@ -404,9 +613,25 @@ pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) 
         return Ok(false);
     }
 
+    let compiled = if mount_mapping_requested(plan) {
+        compile_rules(modules, plan, config)?
+    } else {
+        CompiledRules::default()
+    };
+    apply_compiled(plan, compiled, config)
+}
+
+fn apply_compiled(
+    plan: &mut MountPlan,
+    compiled: CompiledRules,
+    config: &config::Config,
+) -> Result<bool> {
+    if !config.kasumi.enabled {
+        return Ok(false);
+    }
+
     let runtime_requested = kasumi_runtime_requested(plan, config)?;
-    let available = can_operate(config)?;
-    if !available {
+    if !can_operate(config)? {
         bail!("Kasumi became unavailable before rule application");
     }
 
@@ -419,11 +644,6 @@ pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) 
         runtime_requested
     );
 
-    let compiled = if mount_mapping_requested(plan) {
-        compile_rules(modules, plan, config)?
-    } else {
-        CompiledRules::default()
-    };
     let user_hide_paths = user_hide_rules::load_user_hide_rules()?;
     log_compiled_rule_summary(&compiled, &user_hide_paths);
 
@@ -437,8 +657,11 @@ pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) 
 
     let features = get_features()?;
     log_feature_summary(features);
+    validate_requested_feature_support(config, features)?;
+
     if !runtime_requested {
         kasumi::set_enabled(false)?;
+        save_rule_snapshot(plan, config)?;
         crate::scoped_log!(
             info,
             "mount:kasumi",
@@ -462,16 +685,14 @@ pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) 
 
     let user_hide_applied = user_hide_rules::apply_user_hide_rules_from_paths(&user_hide_paths)?;
 
-    kasumi::set_enabled(runtime_requested)?;
-    if runtime_requested {
-        kasumi::fix_mounts()?;
-    }
+    kasumi::set_enabled(true)?;
+    kasumi::fix_mounts()?;
+    save_rule_snapshot(plan, config)?;
 
     crate::scoped_log!(
         info,
         "mount:kasumi",
-        "apply complete: enabled={}, add_rules={}, merge_rules={}, hide_rules={}, maps_rules={}, kstat_rules={}",
-        runtime_requested,
+        "apply complete: enabled=true, add_rules={}, merge_rules={}, hide_rules={}, maps_rules={}, kstat_rules={}",
         plan.kasumi_add_rules.len(),
         plan.kasumi_merge_rules.len(),
         plan.kasumi_hide_rules.len(),
@@ -488,10 +709,38 @@ pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) 
         );
     }
 
-    if runtime_requested {
-        let hooks = hook_lines()?;
-        crate::scoped_log!(debug, "mount:kasumi", "hooks: {}", hooks.join(","));
+    let hooks = hook_lines()?;
+    crate::scoped_log!(debug, "mount:kasumi", "hooks: {}", hooks.join(","));
+
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_ids_are_sorted_and_deduplicated() {
+        assert_eq!(
+            normalize_module_ids(vec!["b".to_string(), "a".to_string(), "b".to_string()]),
+            vec!["a", "b"]
+        );
     }
 
-    Ok(runtime_requested)
+    #[test]
+    fn persisted_targets_must_be_absolute_normalized_and_managed() {
+        let managed = HashSet::from(["system".to_string(), "vendor".to_string()]);
+
+        assert!(validate_rule_target("/system/etc/file", &managed).is_ok());
+        assert!(validate_rule_target("/data/local/tmp/file", &managed).is_err());
+        assert!(validate_rule_target("system/etc/file", &managed).is_err());
+        assert!(validate_rule_target("/system/../data/file", &managed).is_err());
+    }
+
+    #[test]
+    fn persisted_file_types_are_restricted_to_kernel_dirent_values() {
+        assert!(validate_file_type(libc::DT_REG as i32).is_ok());
+        assert!(validate_file_type(libc::DT_LNK as i32).is_ok());
+        assert!(validate_file_type(9999).is_err());
+    }
 }
