@@ -2,6 +2,6 @@
   "version": "v4.2.0-fork-dev",
   "versionCode": 1000000000,
   "zipUrl": "",
-  "changelog": "https://github.com/Zhanfg/meta-hybrid_mount/blob/fix/kasumi-protocol16-17/changelog.md",
+  "changelog": "https://github.com/Zhanfg/meta-hybrid_mount/blob/dev/changelog.md",
   "disabled": true
 }
