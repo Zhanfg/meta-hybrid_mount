@@ -1,0 +1,164 @@
+name: Apply Kasumi Protocol Compatibility
+
+on:
+  push:
+    branches:
+      - 'fix/kasumi-protocol16-17'
+    paths:
+      - '.github/workflows/apply-kasumi-protocol-compat.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/kasumi-protocol16-17
+          fetch-depth: 0
+
+      - name: Add protocol 16 and 17 compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/sys/kasumi.rs")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one match, found {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "pub const KSM_PROTOCOL_VERSION: c_int = uapi::KSM_PROTOCOL_VERSION as c_int;\n",
+              "pub const KSM_PROTOCOL_VERSION: c_int = uapi::KSM_PROTOCOL_VERSION as c_int;\n"
+              "// Protocol 16 is the last known-good integrated-kernel ABI used by the\n"
+              "// 4.2.0-1838 baseline. Protocol 17 keeps the existing mount ioctls but\n"
+              "// replaces the legacy hide-UID dispatch with the policy API.\n"
+              "const KSM_MIN_SUPPORTED_PROTOCOL_VERSION: c_int = 16;\n",
+          )
+
+          replace_once(
+              "pub fn status_name(status: KasumiStatus) -> &'static str {\n"
+              "    match status {\n"
+              "        KasumiStatus::Available => \"available\",\n"
+              "        KasumiStatus::NotPresent => \"not_present\",\n"
+              "        KasumiStatus::KernelNotSupported => \"kernel_not_supported\",\n"
+              "        KasumiStatus::ModuleTooOld => \"module_too_old\",\n"
+              "    }\n"
+              "}\n",
+              "pub fn status_name(status: KasumiStatus) -> &'static str {\n"
+              "    match status {\n"
+              "        KasumiStatus::Available => \"available\",\n"
+              "        KasumiStatus::NotPresent => \"not_present\",\n"
+              "        KasumiStatus::KernelNotSupported => \"kernel_not_supported\",\n"
+              "        KasumiStatus::ModuleTooOld => \"module_too_old\",\n"
+              "    }\n"
+              "}\n\n"
+              "fn classify_protocol_version(version: c_int) -> KasumiStatus {\n"
+              "    if version < KSM_MIN_SUPPORTED_PROTOCOL_VERSION {\n"
+              "        KasumiStatus::KernelNotSupported\n"
+              "    } else if version > KSM_PROTOCOL_VERSION {\n"
+              "        KasumiStatus::ModuleTooOld\n"
+              "    } else {\n"
+              "        KasumiStatus::Available\n"
+              "    }\n"
+              "}\n",
+          )
+
+          replace_once(
+              "        match get_protocol_version()? {\n"
+              "            version if version < KSM_PROTOCOL_VERSION => KasumiStatus::KernelNotSupported,\n"
+              "            version if version > KSM_PROTOCOL_VERSION => KasumiStatus::ModuleTooOld,\n"
+              "            _ => KasumiStatus::Available,\n"
+              "        }\n",
+              "        classify_protocol_version(get_protocol_version()?)\n",
+          )
+
+          replace_once(
+              "pub fn set_hide_uids(uids: &[u32]) -> Result<()> {\n"
+              "    clear_policy_uids(KSM_POLICY_UID_LIST_ALL)?;\n\n"
+              "    if uids.is_empty() {\n"
+              "        return set_policy(KSM_POLICY_OWNER_AUTO, 0);\n"
+              "    }\n\n"
+              "    set_policy_uids(KSM_POLICY_UID_LIST_ALLOW, uids)?;\n"
+              "    set_policy(KSM_POLICY_OWNER_MANUAL, KSM_POLICY_FLAG_USE_ALLOW_UIDS)\n"
+              "}\n",
+              "pub fn set_hide_uids(uids: &[u32]) -> Result<()> {\n"
+              "    let protocol = get_protocol_version().context(\"failed to select Kasumi hide-UID API\")?;\n\n"
+              "    match protocol {\n"
+              "        KSM_MIN_SUPPORTED_PROTOCOL_VERSION => {\n"
+              "            let mut arg = KasumiUidListArg::from_slice(uids);\n"
+              "            ioctl_with_arg(\"set_hide_uids\", KSM_IOC_SET_HIDE_UIDS, &mut arg)\n"
+              "        }\n"
+              "        KSM_PROTOCOL_VERSION => {\n"
+              "            clear_policy_uids(KSM_POLICY_UID_LIST_ALL)?;\n\n"
+              "            if uids.is_empty() {\n"
+              "                return set_policy(KSM_POLICY_OWNER_AUTO, 0);\n"
+              "            }\n\n"
+              "            set_policy_uids(KSM_POLICY_UID_LIST_ALLOW, uids)?;\n"
+              "            set_policy(KSM_POLICY_OWNER_MANUAL, KSM_POLICY_FLAG_USE_ALLOW_UIDS)\n"
+              "        }\n"
+              "        _ => bail!(\n"
+              "            \"unsupported Kasumi protocol {protocol}; supported range is {}..={}\",\n"
+              "            KSM_MIN_SUPPORTED_PROTOCOL_VERSION,\n"
+              "            KSM_PROTOCOL_VERSION\n"
+              "        ),\n"
+              "    }\n"
+              "}\n",
+          )
+
+          text += """
+
+#[cfg(test)]
+mod protocol_compat_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_protocol_16_baseline_and_protocol_17_current() {
+        assert_eq!(
+            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION),
+            KasumiStatus::Available
+        );
+        assert_eq!(
+            classify_protocol_version(KSM_PROTOCOL_VERSION),
+            KasumiStatus::Available
+        );
+    }
+
+    #[test]
+    fn rejects_protocols_outside_the_supported_range() {
+        assert_eq!(
+            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION - 1),
+            KasumiStatus::KernelNotSupported
+        );
+        assert_eq!(
+            classify_protocol_version(KSM_PROTOCOL_VERSION + 1),
+            KasumiStatus::ModuleTooOld
+        );
+    }
+}
+"""
+
+          path.write_text(text)
+          PY
+
+          cargo fmt --all
+          git diff --check
+
+      - name: Commit compatibility fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sys/kasumi.rs
+          git commit -m "fix: support Kasumi protocol 16 and 17"
+          git push origin HEAD:fix/kasumi-protocol16-17
