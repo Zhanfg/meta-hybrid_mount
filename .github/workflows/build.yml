@@ -1,6 +1,7 @@
 # Copyright (C) 2026 YuzakiKokuban <heibanbaize@gmail.com>
 #
 # SPDX-License-Identifier: GPL-3.0-only
+# Fork validation pins the audited Kasumi API 17 commit and fork-local CI image.
 
 name: Build Hybrid-Mount
 
