@@ -514,8 +514,7 @@ fn dispatch_kasumi(ctx: &CommandContext<'_>, cmd: KasumiCommand) -> Result<Value
 }
 
 fn patched_config(config: &Config, patch: Value) -> Result<Config> {
-    let mut payload =
-        serde_json::to_value(config).context("Failed to encode current config")?;
+    let mut payload = serde_json::to_value(config).context("Failed to encode current config")?;
     merge_json(&mut payload, patch, 0)
         .context("Failed to merge config patch (nesting too deep)")?;
     serde_json::from_value(payload).context("Failed to decode patched config")
@@ -651,8 +650,9 @@ where
 
     if let Err(save_error) = config.save_to_file(config_path) {
         return match apply(previous) {
-            Ok(_) => Err(save_error
-                .context("Failed to persist runtime config; previous runtime restored")),
+            Ok(_) => {
+                Err(save_error.context("Failed to persist runtime config; previous runtime restored"))
+            }
             Err(rollback_error) => bail!(
                 "Runtime config persistence and rollback both failed: save={save_error:#}; rollback={rollback_error:#}"
             ),
@@ -844,18 +844,13 @@ mod tests {
         updated.disable_umount = true;
         let mut calls = Vec::new();
 
-        let error = commit_runtime_config_with(
-            &previous,
-            &updated,
-            &config_path,
-            |config| {
-                calls.push(config.disable_umount);
-                if config.disable_umount {
-                    bail!("simulated runtime failure");
-                }
-                Ok(true)
-            },
-        )
+        let error = commit_runtime_config_with(&previous, &updated, &config_path, |config| {
+            calls.push(config.disable_umount);
+            if config.disable_umount {
+                bail!("simulated runtime failure");
+            }
+            Ok(true)
+        })
         .unwrap_err();
 
         assert!(error.to_string().contains("previous runtime restored"));
@@ -892,16 +887,11 @@ mod tests {
         updated.disable_umount = true;
         let mut observed_disk_values = Vec::new();
 
-        let applied = commit_runtime_config_with(
-            &previous,
-            &updated,
-            &config_path,
-            |config| {
-                let disk = Config::load_from_file(&config_path).unwrap();
-                observed_disk_values.push(disk.disable_umount);
-                Ok(config.disable_umount)
-            },
-        )
+        let applied = commit_runtime_config_with(&previous, &updated, &config_path, |config| {
+            let disk = Config::load_from_file(&config_path).unwrap();
+            observed_disk_values.push(disk.disable_umount);
+            Ok(config.disable_umount)
+        })
         .unwrap();
 
         assert!(applied);
