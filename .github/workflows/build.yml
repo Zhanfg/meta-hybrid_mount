@@ -187,8 +187,27 @@ jobs:
               test -d "$STAGE_DIR/webroot"
               test -s "$STAGE_DIR/launcher.png"
               test -d "$STAGE_DIR/kasumi_lkm"
-              LKM_COUNT="$(find "$STAGE_DIR/kasumi_lkm" -maxdepth 1 -type f -name '*.ko' | wc -l | tr -d ' ')"
-              test "$LKM_COUNT" -eq 7
+
+              EXPECTED_LKMS=(
+                android12-5.10_arm64_kasumi_lkm.ko
+                android13-5.10_arm64_kasumi_lkm.ko
+                android13-5.15_arm64_kasumi_lkm.ko
+                android14-5.15_arm64_kasumi_lkm.ko
+                android14-6.1_arm64_kasumi_lkm.ko
+                android15-6.6_arm64_kasumi_lkm.ko
+                android16-6.12_arm64_kasumi_lkm.ko
+              )
+              mapfile -t ACTUAL_LKMS < <(
+                find "$STAGE_DIR/kasumi_lkm" -maxdepth 1 -type f -name '*.ko' -printf '%f\n' | sort
+              )
+              if [ "${#ACTUAL_LKMS[@]}" -ne "${#EXPECTED_LKMS[@]}" ] \
+                || ! diff -u \
+                  <(printf '%s\n' "${EXPECTED_LKMS[@]}") \
+                  <(printf '%s\n' "${ACTUAL_LKMS[@]}"); then
+                echo "Full artifact contains an unexpected Kasumi LKM target set."
+                find "$STAGE_DIR/kasumi_lkm" -maxdepth 1 -type f -printf '%f\n' | sort
+                exit 1
+              fi
               test ! -e "$STAGE_DIR/.nano"
               ;;
             lite)
