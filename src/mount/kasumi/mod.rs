@@ -8,7 +8,7 @@ mod compile;
 mod runtime;
 mod status;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 pub use cleanup::rollback_runtime;
 pub use runtime::{apply, reset_runtime};
 pub use status::{
