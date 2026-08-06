@@ -4,7 +4,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
 };
 
 use crate::{core::ops::plan::PrepareMetrics, domain::MountMode};
@@ -59,21 +59,65 @@ pub(super) struct ModeDecision {
 
 pub(super) struct PrepareContext {
     pub(super) managed_partitions: HashSet<String>,
+    pub(super) system_root: PathBuf,
     pub(super) target_cache: HashMap<PathBuf, PathBuf>,
     pub(super) metrics: PrepareMetrics,
 }
 
 impl PrepareContext {
-    pub(super) fn new(managed_partitions: HashSet<String>) -> Self {
+    pub(super) fn new(managed_partitions: HashSet<String>, system_root: PathBuf) -> Self {
         Self {
             managed_partitions,
+            system_root,
             target_cache: HashMap::new(),
             metrics: PrepareMetrics::default(),
         }
     }
 
+    pub(super) fn resolved_target_is_managed(&self, target: &Path) -> bool {
+        let Ok(relative) = target.strip_prefix(&self.system_root) else {
+            return false;
+        };
+        let Some(Component::Normal(partition)) = relative.components().next() else {
+            return false;
+        };
+        partition
+            .to_str()
+            .is_some_and(|partition| self.managed_partitions.contains(partition))
+    }
+
     pub(super) fn record_copy(&mut self, bytes: u64) {
         self.metrics.copied_entries += 1;
         self.metrics.copied_bytes = self.metrics.copied_bytes.saturating_add(bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_targets_must_stay_under_managed_partitions() {
+        let context = PrepareContext::new(
+            HashSet::from(["system".to_string(), "vendor".to_string()]),
+            PathBuf::from("/"),
+        );
+
+        assert!(context.resolved_target_is_managed(Path::new("/system/etc")));
+        assert!(context.resolved_target_is_managed(Path::new("/vendor/lib64")));
+        assert!(!context.resolved_target_is_managed(Path::new("/data/local/tmp")));
+        assert!(!context.resolved_target_is_managed(Path::new("/")));
+    }
+
+    #[test]
+    fn resolved_targets_cannot_escape_a_test_system_root() {
+        let context = PrepareContext::new(
+            HashSet::from(["system".to_string()]),
+            PathBuf::from("/tmp/sysroot"),
+        );
+
+        assert!(context.resolved_target_is_managed(Path::new("/tmp/sysroot/system/bin")));
+        assert!(!context.resolved_target_is_managed(Path::new("/tmp/outside/system/bin")));
+        assert!(!context.resolved_target_is_managed(Path::new("/tmp/sysroot/data")));
     }
 }

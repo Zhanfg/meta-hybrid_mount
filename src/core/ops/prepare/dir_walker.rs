@@ -31,6 +31,14 @@ impl PrepareContext {
 
         let resolved = utils::resolve_link_path(system_target)
             .with_context(|| format!("failed to resolve target {}", system_target.display()))?;
+        if !self.resolved_target_is_managed(&resolved) {
+            bail!(
+                "resolved mount target escaped managed partitions: source={}, resolved={}, system_root={}",
+                system_target.display(),
+                resolved.display(),
+                self.system_root.display()
+            );
+        }
         self.target_cache
             .insert(system_target.to_path_buf(), resolved.clone());
         Ok(resolved)

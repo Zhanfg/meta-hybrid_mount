@@ -87,7 +87,7 @@ pub(crate) fn prepare_mount_plan_with_root(
         .map(|(idx, module)| (module.id.as_str(), idx))
         .collect();
     let managed_set = managed_partitions.into_iter().collect::<HashSet<_>>();
-    let mut context = PrepareContext::new(managed_set);
+    let mut context = PrepareContext::new(managed_set, system_root.to_path_buf());
     let mut overlay_groups: BTreeMap<PathBuf, (String, Vec<PathBuf>)> = BTreeMap::new();
     let mut magic_ids = HashSet::new();
     #[cfg(feature = "kasumi")]
