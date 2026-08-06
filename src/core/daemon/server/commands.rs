@@ -152,11 +152,12 @@ fn cached_status_and_snapshot(state: &Arc<Mutex<RuntimeState>>) -> Result<(Value
 // ── Top-level dispatch ──────────────────────────────────────────────────
 
 pub(super) fn dispatch_command(ctx: &CommandContext<'_>, command: DaemonCommand) -> Result<Value> {
-    let _write_guard = if command_writes_config(&command) {
-        Some(ctx.config_access.lock_writes()?)
-    } else {
-        None
-    };
+    // Every command shares one exclusive boundary. Read requests are short,
+    // while runtime writes can touch config, Kasumi rules, uname state, hide
+    // policy, cached connections and the LKM lifecycle. Serializing the full
+    // command prevents a read from observing a half-applied update and avoids
+    // unload/rule/config races across concurrent HTTP or Unix clients.
+    let _command_guard = ctx.config_access.lock_writes()?;
     dispatch_command_unlocked(ctx, command)
 }
 
@@ -167,18 +168,6 @@ fn dispatch_command_unlocked(ctx: &CommandContext<'_>, command: DaemonCommand) -
         DaemonCommand::Modules(cmd) => dispatch_modules(ctx, cmd),
         #[cfg(feature = "kasumi")]
         DaemonCommand::Kasumi(cmd) => dispatch_kasumi(ctx, cmd),
-    }
-}
-
-fn command_writes_config(command: &DaemonCommand) -> bool {
-    match command {
-        DaemonCommand::Config(ConfigCommand::Get) => false,
-        DaemonCommand::Config(_) | DaemonCommand::Modules(ModulesCommand::Apply { .. }) => true,
-        DaemonCommand::Modules(ModulesCommand::List) | DaemonCommand::System(_) => false,
-        #[cfg(feature = "kasumi")]
-        DaemonCommand::Kasumi(KasumiCommand::MapsAdd { .. } | KasumiCommand::MapsClear) => true,
-        #[cfg(feature = "kasumi")]
-        DaemonCommand::Kasumi(_) => false,
     }
 }
 
@@ -589,7 +578,6 @@ fn validate_url(url: &str) -> Result<()> {
     if url.contains('\0') || url.contains('\n') || url.contains('\r') {
         bail!("URL contains invalid control characters");
     }
-    // Reject URLs that could be misinterpreted as am(1) flags
     if url.contains(" --") {
         bail!("URL contains suspicious argument-like patterns");
     }
@@ -779,19 +767,15 @@ mod tests {
 
     #[test]
     fn validate_url_accepts_valid_and_rejects_invalid() {
-        // Accept http/https
         assert!(validate_url("https://example.com").is_ok());
         assert!(validate_url("http://localhost:8080/path?q=1").is_ok());
 
-        // Reject non-http schemes
         assert!(validate_url("ftp://example.com").is_err());
         assert!(validate_url("javascript:alert(1)").is_err());
         assert!(validate_url("file:///etc/passwd").is_err());
 
-        // Reject flag injection
         assert!(validate_url("https://example.com --es extra value").is_err());
 
-        // Reject control characters
         assert!(validate_url("https://example.com\n").is_err());
         assert!(validate_url("https://example.com\r\n").is_err());
         assert!(validate_url("https://ex\0ample.com").is_err());
@@ -828,12 +812,6 @@ mod tests {
         let saved = Config::load_from_file(&config_path).unwrap();
         assert!(saved.disable_umount);
         assert_eq!(saved.default_mode, crate::domain::DefaultMode::Magic);
-        assert!(command_writes_config(&DaemonCommand::Config(
-            ConfigCommand::Patch {
-                patch: json!({}),
-                apply_runtime: false,
-            }
-        )));
     }
 
     #[test]
