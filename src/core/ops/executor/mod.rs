@@ -34,6 +34,8 @@ pub struct ExecutionResult {
     pub kasumi_module_ids: Vec<String>,
     pub kasumi_runtime_enabled: bool,
     pub mount_stats: MountStatistics,
+    #[cfg(feature = "kasumi")]
+    kasumi_guard: KasumiRuntimeGuard,
 }
 
 impl ExecutionResult {
@@ -46,6 +48,11 @@ impl ExecutionResult {
         {
             0
         }
+    }
+
+    pub(crate) fn commit_runtime(&mut self) {
+        #[cfg(feature = "kasumi")]
+        self.kasumi_guard.disarm();
     }
 }
 
@@ -72,89 +79,18 @@ impl Drop for KasumiRuntimeGuard {
             return;
         }
 
-        fn record(errors: &mut Vec<String>, operation: &str, result: Result<()>) {
-            if let Err(error) = result {
-                errors.push(format!("{operation}: {error:#}"));
-            }
-        }
-
-        let mut errors = Vec::new();
-        record(
-            &mut errors,
-            "disable runtime",
-            crate::sys::kasumi::set_enabled(false),
-        );
-        record(
-            &mut errors,
-            "clear mount rules",
-            crate::sys::kasumi::clear_rules(),
-        );
-        record(
-            &mut errors,
-            "clear maps rules",
-            crate::sys::kasumi::clear_maps_rules(),
-        );
-        record(
-            &mut errors,
-            "disable debug",
-            crate::sys::kasumi::set_debug(false),
-        );
-        record(
-            &mut errors,
-            "disable stealth",
-            crate::sys::kasumi::set_stealth(false),
-        );
-        record(
-            &mut errors,
-            "disable mount hide",
-            crate::sys::kasumi::set_mount_hide(false),
-        );
-        record(
-            &mut errors,
-            "disable maps spoof",
-            crate::sys::kasumi::set_maps_spoof(false),
-        );
-        record(
-            &mut errors,
-            "disable statfs spoof",
-            crate::sys::kasumi::set_statfs_spoof(false),
-        );
-        record(
-            &mut errors,
-            "disable selinux fix",
-            crate::sys::kasumi::set_selinux_fix(false),
-        );
-        record(
-            &mut errors,
-            "clear hidden uids",
-            crate::sys::kasumi::set_hide_uids(&[]),
-        );
-        record(
-            &mut errors,
-            "clear cmdline spoof",
-            crate::sys::kasumi::set_cmdline_str(""),
-        );
-        let empty_uname = crate::sys::kasumi::KasumiSpoofUname::default();
-        record(
-            &mut errors,
-            "clear scoped uname spoof",
-            crate::sys::kasumi::set_uname(&empty_uname),
-        );
-        record(
-            &mut errors,
-            "clear global uname spoof",
-            crate::sys::kasumi::restore_uname_global(),
-        );
-
-        if errors.is_empty() {
-            crate::scoped_log!(warn, "executor", "Kasumi runtime rolled back after failure");
-        } else {
-            crate::scoped_log!(
+        match crate::mount::kasumi::rollback_runtime() {
+            Ok(()) => crate::scoped_log!(
+                warn,
+                "executor",
+                "Kasumi runtime rolled back after transaction failure"
+            ),
+            Err(error) => crate::scoped_log!(
                 error,
                 "executor",
-                "Kasumi rollback incomplete: failures={}",
-                errors.join(" | ")
-            );
+                "Kasumi rollback incomplete: error={:#}",
+                error
+            ),
         }
     }
 }
@@ -217,7 +153,7 @@ impl Executor {
         }
 
         #[cfg(feature = "kasumi")]
-        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_available);
+        let kasumi_guard = KasumiRuntimeGuard::new(kasumi_available);
         #[cfg(feature = "kasumi")]
         let final_kasumi_ids = plan.kasumi_module_ids.clone();
         #[cfg(feature = "kasumi")]
@@ -385,9 +321,6 @@ impl Executor {
             kasumi_count
         );
 
-        #[cfg(feature = "kasumi")]
-        kasumi_guard.disarm();
-
         Ok(ExecutionResult {
             overlay_module_ids: result_overlay,
             overlay_partitions: final_overlay_partitions.into_iter().collect(),
@@ -397,6 +330,8 @@ impl Executor {
             kasumi_module_ids: final_kasumi_ids,
             kasumi_runtime_enabled,
             mount_stats,
+            #[cfg(feature = "kasumi")]
+            kasumi_guard,
         })
     }
 
