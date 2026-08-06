@@ -1,0 +1,335 @@
+name: Apply Review Round 1 Fixes
+
+on:
+  push:
+    branches:
+      - 'review/triple-code-review'
+    paths:
+      - '.github/workflows/apply-review-round1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: review/triple-code-review
+          fetch-depth: 0
+
+      - name: Fix Kasumi runtime detection and LKM ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:100]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          kasumi = Path('src/sys/kasumi.rs')
+          replace_once(
+              kasumi,
+              '''fn module_loaded() -> Result<bool> {
+    let content = fs::read_to_string("/proc/modules").context("failed to read /proc/modules")?;
+
+    Ok(content
+        .lines()
+        .any(|line| line.starts_with("kasumi_lkm ") || line.starts_with("kasumi_lkm\\t")))
+}
+''',
+              '''fn module_name_from_proc_modules(content: &str) -> Option<&str> {
+    content.lines().find_map(|line| {
+        let name = line.split_whitespace().next()?;
+        matches!(name, "kasumi_lkm" | "kasumi").then_some(name)
+    })
+}
+
+fn module_loaded() -> Result<bool> {
+    let content = fs::read_to_string("/proc/modules").context("failed to read /proc/modules")?;
+    Ok(module_name_from_proc_modules(&content).is_some())
+}
+'''
+          )
+          replace_once(
+              kasumi,
+              '''    // Bail immediately when Kasumi LKM isn't loaded — avoids a ~4.6 s
+    // retry loop that can never succeed on unsupported kernels.
+    // Use module_loaded() instead of check_status() to avoid recursion:
+    // check_status() → get_protocol_version() → ioctl_call() → fetch_anon_fd() → check_status()
+    if !module_loaded()? {
+        bail!("Kasumi LKM is not loaded");
+    }
+
+    let mut fd = -1;
+''',
+              '''    // Probe once before trusting /proc/modules. Protocol-16 kernels may expose
+    // Kasumi under the legacy `kasumi` name, and integrated implementations
+    // may not have a loadable-module entry at all. The module list is used
+    // only to decide whether delayed retries are useful.
+    let mut fd = -1;
+'''
+          )
+          replace_once(
+              kasumi,
+              '''        if fd >= 0 {
+            break;
+        }
+    }
+
+    if fd < 0 {
+''',
+              '''        if fd >= 0 {
+            break;
+        }
+
+        if wait_round == 0 && !module_loaded()? {
+            crate::scoped_log!(
+                debug,
+                "kasumi:fd",
+                "stop retries: immediate probe failed and no Kasumi module is listed"
+            );
+            break;
+        }
+    }
+
+    if fd < 0 {
+'''
+          )
+          replace_once(
+              kasumi,
+              '''    } else if !module_loaded()? {
+        KasumiStatus::NotPresent
+    } else {
+        classify_protocol_version(get_protocol_version()?)
+    };
+''',
+              '''    } else {
+        match get_protocol_version() {
+            Ok(version) => classify_protocol_version(version),
+            Err(error) => {
+                crate::scoped_log!(
+                    debug,
+                    "kasumi:status",
+                    "protocol probe unavailable: error={:#}",
+                    error
+                );
+                KasumiStatus::NotPresent
+            }
+        }
+    };
+'''
+          )
+          marker = '''    fn rejects_protocols_outside_the_supported_range() {
+        assert_eq!(
+            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION - 1),
+            KasumiStatus::KernelNotSupported
+        );
+        assert_eq!(
+            classify_protocol_version(KSM_PROTOCOL_VERSION + 1),
+            KasumiStatus::ModuleTooOld
+        );
+    }
+'''
+          replacement = marker + '''
+    #[test]
+    fn recognizes_current_and_legacy_module_names() {
+        assert_eq!(
+            module_name_from_proc_modules("kasumi_lkm 123 0 - Live 0x0\\n"),
+            Some("kasumi_lkm")
+        );
+        assert_eq!(
+            module_name_from_proc_modules("kasumi 123 0 - Live 0x0\\n"),
+            Some("kasumi")
+        );
+        assert_eq!(module_name_from_proc_modules("other 1 0 - Live 0x0\\n"), None);
+    }
+'''
+          replace_once(kasumi, marker, replacement)
+
+          lkm = Path('src/sys/lkm.rs')
+          replace_once(
+              lkm,
+              '''fn loaded_module_name() -> Result<Option<String>> {
+    let content = fs::read_to_string("/proc/modules").context("failed to read /proc/modules")?;
+    Ok(content.lines().find_map(|line| {
+        let name = line.split_whitespace().next()?;
+        (name == defs::KASUMI_LKM_MODULE_NAME).then(|| name.to_string())
+    }))
+}
+''',
+              '''fn loaded_module_name_from_proc_modules(content: &str) -> Option<&str> {
+    content.lines().find_map(|line| {
+        let name = line.split_whitespace().next()?;
+        matches!(name, "kasumi_lkm" | "kasumi").then_some(name)
+    })
+}
+
+fn loaded_module_name() -> Result<Option<String>> {
+    let content = fs::read_to_string("/proc/modules").context("failed to read /proc/modules")?;
+    Ok(loaded_module_name_from_proc_modules(&content).map(ToString::to_string))
+}
+
+fn managed_module_name() -> Result<Option<String>> {
+    Ok(loaded_module_name()?
+        .filter(|name| name == defs::KASUMI_LKM_MODULE_NAME))
+}
+'''
+          )
+          replace_once(
+              lkm,
+              '''pub fn load(config: &KasumiConfig) -> Result<()> {
+    if is_loaded()? {
+        kasumi::invalidate_status_cache()?;
+        return Ok(());
+    }
+''',
+              '''pub fn load(config: &KasumiConfig) -> Result<()> {
+    if kasumi::can_operate()? {
+        crate::scoped_log!(
+            info,
+            "lkm",
+            "load skipped: an operable Kasumi runtime is already present"
+        );
+        return Ok(());
+    }
+    if is_loaded()? {
+        kasumi::invalidate_status_cache()?;
+        return Ok(());
+    }
+'''
+          )
+          replace_once(
+              lkm,
+              '''pub fn unload(_config: &KasumiConfig) -> Result<()> {
+    let Some(module_name) = loaded_module_name()? else {
+        kasumi::release_connection()?;
+        return Ok(());
+    };
+''',
+              '''pub fn unload(_config: &KasumiConfig) -> Result<()> {
+    let Some(module_name) = managed_module_name()? else {
+        if kasumi::can_operate()? {
+            bail!(
+                "active Kasumi runtime is kernel-integrated or externally managed; refusing to unload it"
+            );
+        }
+        kasumi::release_connection()?;
+        return Ok(());
+    };
+'''
+          )
+          replace_once(
+              lkm,
+              '''    if !config.enabled
+        || !config.lkm_autoload
+        || is_loaded()?
+        || kasumi::check_status()? == kasumi::KasumiStatus::KernelNotSupported
+    {
+''',
+              '''    if !config.enabled
+        || !config.lkm_autoload
+        || kasumi::can_operate()?
+        || is_loaded()?
+        || kasumi::check_status()? == kasumi::KasumiStatus::KernelNotSupported
+    {
+'''
+          )
+          replace_once(
+              lkm,
+              '''mod tests {
+    use super::parse_kmi_from_release;
+''',
+              '''mod tests {
+    use super::{loaded_module_name_from_proc_modules, parse_kmi_from_release};
+'''
+          )
+          replace_once(
+              lkm,
+              '''    fn rejects_vendor_release_without_android_kmi() {
+        let error = parse_kmi_from_release("5.15.207-g3ddad1147e36").unwrap_err();
+
+        assert!(error.to_string().contains("has no Android version"));
+    }
+''',
+              '''    fn rejects_vendor_release_without_android_kmi() {
+        let error = parse_kmi_from_release("5.15.207-g3ddad1147e36").unwrap_err();
+
+        assert!(error.to_string().contains("has no Android version"));
+    }
+
+    #[test]
+    fn detects_legacy_and_current_kasumi_modules() {
+        assert_eq!(
+            loaded_module_name_from_proc_modules("kasumi_lkm 1 0 - Live 0x0\\n"),
+            Some("kasumi_lkm")
+        );
+        assert_eq!(
+            loaded_module_name_from_proc_modules("kasumi 1 0 - Live 0x0\\n"),
+            Some("kasumi")
+        );
+        assert_eq!(loaded_module_name_from_proc_modules("other 1 0 - Live 0x0\\n"), None);
+    }
+'''
+          )
+
+          status = Path('src/mount/kasumi/status.rs')
+          replace_once(
+              status,
+              '''    let protocol_version = if lkm_loaded {
+        Some(kasumi::get_protocol_version()?)
+    } else {
+        None
+    };
+''',
+              '''    let protocol_version = if live_status == KasumiStatus::Available {
+        Some(kasumi::get_protocol_version()?)
+    } else {
+        None
+    };
+'''
+          )
+
+          api = Path('src/core/api/kasumi.rs')
+          replace_once(
+              api,
+              '''    let mismatch = kernel_version != kasumi::KSM_PROTOCOL_VERSION;
+''',
+              '''    let mismatch = status != KasumiStatus::Available;
+'''
+          )
+          replace_once(
+              api,
+              '''        KasumiStatus::Available if kernel_version != kasumi::KSM_PROTOCOL_VERSION => Some(format!(
+            "protocol mismatch: userspace api{}, kernel api{}",
+            kasumi::KSM_PROTOCOL_VERSION,
+            kernel_version
+        )),
+        KasumiStatus::Available => None,
+''',
+              '''        KasumiStatus::Available => None,
+'''
+          )
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test --workspace --all-features
+          cargo test -p hybrid-mount --no-default-features --features control-plane --lib
+          cargo test -p hybrid-mount --no-default-features --lib
+
+      - name: Commit round-one fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/sys/kasumi.rs src/sys/lkm.rs src/mount/kasumi/status.rs src/core/api/kasumi.rs
+          git commit -m 'fix: preserve protocol-16 runtime detection and LKM ownership'
+          git push origin HEAD:review/triple-code-review
