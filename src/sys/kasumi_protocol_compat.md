@@ -20,6 +20,10 @@ Hybrid Mount supports the two Kasumi ABIs required by the maintained fork:
 
 An unsupported Kasumi protocol must not prevent unrelated modules from mounting. Startup degrades Kasumi mount rules to Magic Mount for the current boot while leaving the persistent configuration unchanged.
 
+## Fork packaging policy
+
+The maintained fork keeps the canonical `hybrid_mount` module ID so an existing installation and its configuration can be upgraded in place. Fork artifacts use a distinct display name and a fork-specific monotonic `versionCode` namespace. Development packages omit `updateJson`; they must not silently return to the upstream release channel or replace the fork with an unrelated upstream artifact.
+
 ## Validation requirements
 
 Any later Kasumi UAPI update must verify:
@@ -29,6 +33,7 @@ Any later Kasumi UAPI update must verify:
 - unchanged layouts for shared structs and ioctls;
 - Full/Lite/Nano builds;
 - Android 15 / kernel 6.6 LKM packaging;
-- upgrade compatibility with an existing 1838-style configuration, including the `enable_hidexattr` alias.
+- upgrade compatibility with an existing 1838-style configuration, including the `enable_hidexattr` alias;
+- fork display name, monotonic `versionCode`, and absence of an upstream `updateJson` in development artifacts.
 
 The maintained candidate is accepted only when these checks run against the same final branch head; artifacts from an earlier head are not treated as release candidates.
