@@ -122,10 +122,7 @@ mod tests {
 
         assert_eq!(plan.degrade_kasumi_to_magic(), 3);
         assert_eq!(plan.magic_module_ids, vec!["a", "b", "existing"]);
-        assert_eq!(
-            plan.kasumi_fallback_module_ids,
-            vec!["a", "b", "existing"]
-        );
+        assert_eq!(plan.kasumi_fallback_module_ids, vec!["a", "b", "existing"]);
         assert!(plan.kasumi_module_ids.is_empty());
         assert!(plan.kasumi_add_rules.is_empty());
         assert!(plan.kasumi_merge_rules.is_empty());
