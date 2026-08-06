@@ -59,10 +59,12 @@ impl MountTransaction {
         })
     }
 
-    pub fn commit(&mut self) -> Result<Vec<PathBuf>> {
-        let targets = self.new_mount_targets()?;
+    /// Mark the complete controller pipeline as successful.
+    ///
+    /// This operation is intentionally infallible so no error can be raised
+    /// after the final runtime state has already been persisted.
+    pub fn commit(&mut self) {
         self.armed = false;
-        Ok(targets)
     }
 
     fn new_mount_targets(&self) -> Result<Vec<PathBuf>> {
@@ -128,9 +130,9 @@ fn select_new_entries(
         .into_iter()
         .filter(|entry| !baseline_ids.contains(&entry.id))
         .filter(|entry| {
-            scope_roots.iter().any(|root| {
-                entry.mount_point == *root || entry.mount_point.starts_with(root)
-            })
+            scope_roots
+                .iter()
+                .any(|root| entry.mount_point == *root || entry.mount_point.starts_with(root))
         })
         .collect::<Vec<_>>();
 
