@@ -119,12 +119,12 @@ impl uapi::kasumi_uid_list_arg {
     }
 }
 
-pub const KSM_POLICY_API_VERSION: u32 = uapi::KSM_POLICY_API_VERSION as u32;
-pub const KSM_POLICY_OWNER_AUTO: u32 = uapi::KSM_POLICY_OWNER_AUTO as u32;
-pub const KSM_POLICY_OWNER_MANUAL: u32 = uapi::KSM_POLICY_OWNER_MANUAL as u32;
-pub const KSM_POLICY_FLAG_USE_ALLOW_UIDS: u32 = uapi::KSM_POLICY_FLAG_USE_ALLOW_UIDS as u32;
-pub const KSM_POLICY_UID_LIST_ALLOW: u32 = uapi::KSM_POLICY_UID_LIST_ALLOW as u32;
-pub const KSM_POLICY_UID_LIST_ALL: u32 = uapi::KSM_POLICY_UID_LIST_ALL as u32;
+pub const KSM_POLICY_API_VERSION: u32 = uapi::KSM_POLICY_API_VERSION;
+pub const KSM_POLICY_OWNER_AUTO: u32 = uapi::KSM_POLICY_OWNER_AUTO;
+pub const KSM_POLICY_OWNER_MANUAL: u32 = uapi::KSM_POLICY_OWNER_MANUAL;
+pub const KSM_POLICY_FLAG_USE_ALLOW_UIDS: u32 = uapi::KSM_POLICY_FLAG_USE_ALLOW_UIDS;
+pub const KSM_POLICY_UID_LIST_ALLOW: u32 = uapi::KSM_POLICY_UID_LIST_ALLOW;
+pub const KSM_POLICY_UID_LIST_ALL: u32 = uapi::KSM_POLICY_UID_LIST_ALL;
 
 pub type KasumiPolicyConfigArg = uapi::kasumi_policy_config_arg;
 pub type KasumiPolicyUidListArg = uapi::kasumi_policy_uid_list_arg;
