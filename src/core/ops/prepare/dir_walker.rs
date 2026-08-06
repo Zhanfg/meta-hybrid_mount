@@ -29,8 +29,12 @@ impl PrepareContext {
             return Ok(cached.clone());
         }
 
-        let resolved = utils::resolve_link_path(system_target)
-            .with_context(|| format!("failed to resolve target {}", system_target.display()))?;
+        let resolved = fs::canonicalize(system_target).with_context(|| {
+            format!(
+                "failed to resolve complete target symlink chain {}",
+                system_target.display()
+            )
+        })?;
         if !self.resolved_target_is_managed(&resolved) {
             bail!(
                 "resolved mount target escaped managed partitions: source={}, resolved={}, system_root={}",
