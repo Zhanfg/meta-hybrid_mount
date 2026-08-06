@@ -1,0 +1,126 @@
+name: Apply Fork Packaging Policy
+
+on:
+  push:
+    branches:
+      - 'fix/kasumi-protocol16-17'
+    paths:
+      - '.github/workflows/apply-fork-packaging-policy.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/kasumi-protocol16-17
+          fetch-depth: 0
+
+      - name: Apply fork-safe metadata and versioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:100]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          cargo = Path('Cargo.toml')
+          replace_once(
+              cargo,
+              'repository = "https://github.com/Hybrid-Mount/meta-hybrid_mount"',
+              'repository = "https://github.com/Zhanfg/meta-hybrid_mount"',
+          )
+          replace_once(cargo, 'name = "Hybrid Mount"\nupdate = "https://raw.githubusercontent.com/Hybrid-Mount/meta-hybrid_mount/main/update.json"', 'name = "Hybrid Mount Fork"\nupdate = ""')
+          replace_once(cargo, 'lite_name = "Hybrid Mount Lite"\nlite_update = "https://raw.githubusercontent.com/Hybrid-Mount/meta-hybrid_mount/main/update-lite.json"', 'lite_name = "Hybrid Mount Fork Lite"\nlite_update = ""')
+          replace_once(cargo, 'nano_name = "Hybrid Mount Nano"\nnano_update = "https://raw.githubusercontent.com/Hybrid-Mount/meta-hybrid_mount/main/update-nano.json"', 'nano_name = "Hybrid Mount Fork Nano"\nnano_update = ""')
+
+          shared = Path('xtask/src/build_meta_shared.rs')
+          replace_once(shared, 'use semver::Version;\n', '')
+          replace_once(
+              shared,
+              'pub fn calculate_version_code(version_str: &str) -> Result<String> {\n    let version = Version::parse(version_str)?;\n    Ok((version.major * 100000 + version.minor * 1000 + version.patch).to_string())\n}\n',
+              'const FORK_VERSION_CODE_BASE: i64 = 1_000_000_000;\n\npub fn calculate_fork_version_code(commit_count: i32) -> Result<String> {\n    if commit_count < 0 {\n        bail!("git commit count cannot be negative: {commit_count}");\n    }\n\n    let version_code = FORK_VERSION_CODE_BASE\n        .checked_add(i64::from(commit_count))\n        .context("fork version code overflow")?;\n    Ok(version_code.to_string())\n}\n',
+          )
+          replace_once(
+              shared,
+              '    let mut content = format!(\n        "id={}\\nname={}\\nversion={}\\nversionCode={}\\nauthor={}\\ndescription={}\\nupdateJson={}\\nmetamodule=1\\n",\n        data.id,\n        data.name,\n        data.version,\n        data.version_code,\n        data.author,\n        data.description,\n        data.update_json,\n    );\n    if data.webui_icon {\n',
+              '    let mut content = format!(\n        "id={}\\nname={}\\nversion={}\\nversionCode={}\\nauthor={}\\ndescription={}\\n",\n        data.id,\n        data.name,\n        data.version,\n        data.version_code,\n        data.author,\n        data.description,\n    );\n    if !data.update_json.trim().is_empty() {\n        content.push_str(&format!("updateJson={}\\n", data.update_json));\n    }\n    content.push_str("metamodule=1\\n");\n    if data.webui_icon {\n',
+          )
+          shared.write_text(shared.read_text() + (
+              '\n#[cfg(test)]\n'
+              'mod tests {\n'
+              '    use super::*;\n\n'
+              '    fn module_prop(update_json: &str) -> String {\n'
+              '        render_module_prop(&ModulePropData {\n'
+              '            id: "hybrid_mount",\n'
+              '            name: "Hybrid Mount Fork",\n'
+              '            version: "4.2.0-2000",\n'
+              '            version_code: "1000002000",\n'
+              '            author: "Hybrid Mount Developers",\n'
+              '            description: "test",\n'
+              '            update_json,\n'
+              '            webui_icon: true,\n'
+              '        })\n'
+              '    }\n\n'
+              '    #[test]\n'
+              '    fn fork_version_code_is_monotonic() {\n'
+              '        assert_eq!(calculate_fork_version_code(1).unwrap(), "1000000001");\n'
+              '        assert_eq!(calculate_fork_version_code(2000).unwrap(), "1000002000");\n'
+              '        assert!(calculate_fork_version_code(-1).is_err());\n'
+              '    }\n\n'
+              '    #[test]\n'
+              '    fn blank_update_url_is_omitted() {\n'
+              '        let prop = module_prop("");\n'
+              '        assert!(!prop.contains("updateJson="));\n'
+              '        assert!(prop.contains("name=Hybrid Mount Fork\\n"));\n'
+              '    }\n\n'
+              '    #[test]\n'
+              '    fn configured_update_url_is_preserved() {\n'
+              '        let prop = module_prop("https://example.invalid/update.json");\n'
+              '        assert!(prop.contains("updateJson=https://example.invalid/update.json\\n"));\n'
+              '    }\n'
+              '}\n'
+          ))
+
+          main = Path('xtask/src/main.rs')
+          text = main.read_text()
+          old = '    let version_code = build_meta_shared::calculate_version_code(clean_version)?;'
+          if text.count(old) != 1:
+              raise SystemExit(f'{main}: release version-code match count={text.count(old)}')
+          text = text.replace(old, '    let version_code = build_meta_shared::calculate_fork_version_code(commit_count)?;', 1)
+          old = '    let version_code = build_meta_shared::calculate_version_code(&clean_version)?;'
+          if text.count(old) != 1:
+              raise SystemExit(f'{main}: local version-code match count={text.count(old)}')
+          text = text.replace(old, '    let version_code = build_meta_shared::calculate_fork_version_code(commit_count)?;', 1)
+          main.write_text(text)
+
+          build = Path('build.rs')
+          replace_once(
+              build,
+              '    let version_code = build_meta_shared::calculate_version_code(&package.version)?;\n    let author = package.authors.join(" & ");\n    let version = format!(\n        "{}-{}",\n        package.version,\n        build_meta_shared::git_commit_count()?\n    );\n',
+              '    let commit_count = build_meta_shared::git_commit_count()?;\n    let version_code = build_meta_shared::calculate_fork_version_code(commit_count)?;\n    let author = package.authors.join(" & ");\n    let version = format!("{}-{}", package.version, commit_count);\n',
+          )
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test -p xtask
+
+      - name: Commit fork packaging policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml build.rs xtask/src/build_meta_shared.rs xtask/src/main.rs
+          git commit -m 'fix: isolate fork packaging and update metadata'
+          git push origin HEAD:fix/kasumi-protocol16-17
