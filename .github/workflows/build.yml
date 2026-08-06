@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - 'dev'
+      - 'fix/**'
     paths:
       - 'src/**'
       - 'Cargo.*'
@@ -51,6 +52,9 @@ jobs:
   build-kasumi-lkm:
     uses: ./.github/workflows/build-kasumi-lkm.yml
     secrets: inherit
+    with:
+      kasumi_repo: Zhanfg/Kasumi
+      kasumi_ref: 4aab6b519dadae6f43776f66a208ea5ae0fc8a3e
 
   build:
     needs: [build-kasumi-lkm]
@@ -93,7 +97,7 @@ jobs:
           name: kasumi-uapi
           path: kasumi_uapi_artifact
 
-      - name: Sync Kasumi UAPI
+      - name: Verify Kasumi UAPI lockstep
         run: |
           set -euo pipefail
           mapfile -t UAPI_FILES < <(find kasumi_uapi_artifact -type f -name kasumi_uapi.h | sort)
@@ -102,8 +106,12 @@ jobs:
             find kasumi_uapi_artifact -type f -print | sort
             exit 1
           fi
-          cp "${UAPI_FILES[0]}" src/sys/kasumi_uapi.h
-          sha256sum src/sys/kasumi_uapi.h
+          if ! cmp -s "${UAPI_FILES[0]}" src/sys/kasumi_uapi.h; then
+            echo "Bundled userspace UAPI does not match the pinned Kasumi kernel source."
+            diff -u src/sys/kasumi_uapi.h "${UAPI_FILES[0]}" || true
+            exit 1
+          fi
+          sha256sum src/sys/kasumi_uapi.h "${UAPI_FILES[0]}"
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
