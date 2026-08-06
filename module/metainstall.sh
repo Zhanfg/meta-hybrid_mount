@@ -63,7 +63,8 @@ wait_volume_key_or_timeout() {
       printf 'timeout\n'
       return 0
     fi
-    local key_event=$(timeout 0.5 getevent -l 2>/dev/null)
+    local key_event
+    key_event=$(timeout 0.5 getevent -l 2>/dev/null || true)
     if echo "$key_event" | grep -q "KEY_VOLUMEUP"; then
       printf 'up\n'
       return 0
@@ -71,6 +72,7 @@ wait_volume_key_or_timeout() {
       printf 'down\n'
       return 0
     fi
+    sleep 0.1
   done
 }
 
@@ -159,7 +161,7 @@ write_mount_mode_marker() {
 prompt_module_mount_mode() {
   local default_mode default_label chosen_mode existing_mode
 
-  existing_mode="$(current_mount_mode_marker)"
+  existing_mode="$(current_mount_mode_marker || true)"
   if [ -n "$existing_mode" ]; then
     ui_print "- Existing module mount mode marker: $(mode_label "$existing_mode")"
     write_mount_mode_marker "$existing_mode"

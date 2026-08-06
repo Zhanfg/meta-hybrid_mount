@@ -52,7 +52,7 @@ wait_volume_key_or_timeout() {
       printf 'timeout\n'
       return 0
     fi
-    key_event=$(timeout 0.5 getevent -l 2>/dev/null)
+    key_event=$(timeout 0.5 getevent -l 2>/dev/null || true)
     if echo "$key_event" | grep -q "KEY_VOLUMEUP"; then
       printf 'up\n'
       return 0
@@ -60,6 +60,7 @@ wait_volume_key_or_timeout() {
       printf 'down\n'
       return 0
     fi
+    sleep 0.1
   done
 }
 
