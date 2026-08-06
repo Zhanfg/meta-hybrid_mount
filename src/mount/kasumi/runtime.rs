@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result, bail};
 
@@ -21,7 +21,12 @@ use crate::{
         config,
         schema::{self, KasumiUnameMode},
     },
-    core::{inventory::Module, ops::plan::MountPlan, user_hide_rules},
+    core::{
+        inventory::{self, Module},
+        ops::plan::MountPlan,
+        runtime_state::RuntimeState,
+        user_hide_rules,
+    },
     defs,
     sys::{
         kasumi::{
@@ -321,6 +326,61 @@ pub fn reset_runtime(config: &config::Config) -> Result<bool> {
     Ok(true)
 }
 
+fn build_live_runtime_inputs(config: &config::Config) -> Result<(MountPlan, Vec<Module>)> {
+    let state = RuntimeState::load().context("failed to load current mount runtime state")?;
+    let mut active_module_ids = state.kasumi_modules;
+    active_module_ids.sort();
+    active_module_ids.dedup();
+    let active_ids: HashSet<String> = active_module_ids.iter().cloned().collect();
+
+    let inventory = inventory::scan_snapshot(config)
+        .context("failed to scan modules for live Kasumi runtime rebuild")?;
+    let modules = inventory
+        .modules
+        .into_iter()
+        .filter(|module| active_ids.contains(&module.id))
+        .collect::<Vec<_>>();
+
+    if modules.len() != active_ids.len() {
+        let found = modules
+            .iter()
+            .map(|module| module.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut missing = active_module_ids
+            .iter()
+            .filter(|id| !found.contains(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        missing.sort();
+        bail!(
+            "live Kasumi runtime references modules missing from current inventory: {}",
+            missing.join(", ")
+        );
+    }
+
+    Ok((
+        MountPlan {
+            kasumi_module_ids: active_module_ids,
+            ..MountPlan::default()
+        },
+        modules,
+    ))
+}
+
+fn preflight_live_runtime(
+    plan: &MountPlan,
+    modules: &[Module],
+    config: &config::Config,
+) -> Result<()> {
+    if mount_mapping_requested(plan) {
+        compile_rules(modules, plan, config)
+            .context("failed to precompile live Kasumi mount rules")?;
+    }
+    user_hide_rules::load_user_hide_rules()
+        .context("failed to validate user hide rules before live rebuild")?;
+    Ok(())
+}
+
 pub fn apply_runtime_config(config: &config::Config) -> Result<bool> {
     if config.kasumi.enabled && !can_operate(config)? {
         lkm::autoload_if_needed(&config.kasumi)?;
@@ -333,21 +393,10 @@ pub fn apply_runtime_config(config: &config::Config) -> Result<bool> {
         return Ok(false);
     }
 
-    let runtime_requested = config.kasumi.enabled && auxiliary_features_requested(config)?;
-    let reset = reset_runtime(config)?;
-    let features = get_features()?;
-    log_feature_summary(features);
-
-    if !runtime_requested {
-        kasumi::set_enabled(false)?;
-        return Ok(reset);
-    }
-
-    apply_runtime_switches(config, true, features)?;
-    apply_spoof_settings(config, features)?;
-    kasumi::set_enabled(true)?;
-    kasumi::fix_mounts()?;
-    Ok(true)
+    let (mut plan, modules) = build_live_runtime_inputs(config)?;
+    preflight_live_runtime(&plan, &modules, config)?;
+    reset_runtime(config)?;
+    apply(&mut plan, &modules, config)
 }
 
 pub fn apply(plan: &mut MountPlan, modules: &[Module], config: &config::Config) -> Result<bool> {
