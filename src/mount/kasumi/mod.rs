@@ -26,14 +26,14 @@ fn rollback_newly_loaded_lkm(
     let lkm_status = lkm::status(&config.kasumi)
         .context("Failed to inspect Kasumi LKM after runtime update failure")?;
     if !lkm_was_loaded && lkm_status.managed {
-        return match lkm::unload(&config.kasumi) {
+        match lkm::unload(&config.kasumi) {
             Ok(()) => bail!(
                 "Kasumi runtime update failed twice; the LKM loaded by this update was unloaded: first={update_error:#}; retry={retry_error:#}"
             ),
             Err(unload_error) => bail!(
                 "Kasumi runtime update failed twice and the newly loaded LKM could not be unloaded: first={update_error:#}; retry={retry_error:#}; unload={unload_error:#}"
             ),
-        };
+        }
     }
 
     bail!(
