@@ -8,7 +8,7 @@ mod compile;
 mod runtime;
 mod status;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::conf::config::Config;
 
