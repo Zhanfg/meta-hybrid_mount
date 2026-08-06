@@ -28,6 +28,8 @@ jobs:
           cargo fmt --all
           git diff --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy -p hybrid-mount --no-default-features --features control-plane --lib -- -D warnings
+          cargo clippy -p hybrid-mount --no-default-features --lib -- -D warnings
           cargo test --workspace --all-features
           cargo test -p hybrid-mount --no-default-features --features control-plane --lib
           cargo test -p hybrid-mount --no-default-features --lib
