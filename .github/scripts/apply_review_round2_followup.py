@@ -53,6 +53,58 @@ replace_once(
 ''',
 )
 
+executor = Path("src/core/ops/executor/mod.rs")
+replace_once(
+    executor,
+    '''        #[cfg(feature = "kasumi")]
+        if kasumi_runtime_enabled {
+            if let Err(error) = crate::sys::kasumi::fix_mounts() {
+                crate::scoped_log!(
+                    warn,
+                    "executor",
+                    "Kasumi mount-id refresh failed after other backends: error={:#}",
+                    error
+                );
+            }
+        }
+''',
+    '''        #[cfg(feature = "kasumi")]
+        if kasumi_runtime_enabled && let Err(error) = crate::sys::kasumi::fix_mounts() {
+            crate::scoped_log!(
+                warn,
+                "executor",
+                "Kasumi mount-id refresh failed after other backends: error={:#}",
+                error
+            );
+        }
+''',
+)
+replace_once(
+    executor,
+    '''        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if !config.disable_umount {
+            if let Err(error) = umount_mgr::commit() {
+                crate::scoped_log!(
+                    warn,
+                    "executor",
+                    "umountable mount-list commit failed after successful mounts: error={:#}",
+                    error
+                );
+            }
+        }
+''',
+    '''        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if !config.disable_umount && let Err(error) = umount_mgr::commit() {
+            crate::scoped_log!(
+                warn,
+                "executor",
+                "umountable mount-list commit failed after successful mounts: error={:#}",
+                error
+            );
+        }
+''',
+)
+
 api_mock = Path("webui/src/lib/api.mock.ts")
 replace_once(
     api_mock,
