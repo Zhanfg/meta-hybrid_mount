@@ -30,3 +30,5 @@ Any later Kasumi UAPI update must verify:
 - Full/Lite/Nano builds;
 - Android 15 / kernel 6.6 LKM packaging;
 - upgrade compatibility with an existing 1838-style configuration, including the `enable_hidexattr` alias.
+
+The maintained candidate is accepted only when these checks run against the same final branch head; artifacts from an earlier head are not treated as release candidates.
