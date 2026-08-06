@@ -8,6 +8,7 @@ RUN_DIR="$BASE_DIR/run"
 PID_FILE="$RUN_DIR/daemon.pid"
 SOCKET_FILE="$RUN_DIR/daemon.sock"
 STATE_FILE="$RUN_DIR/daemon_state.json"
+KASUMI_RULE_SNAPSHOT_FILE="$RUN_DIR/kasumi_mount_rules.json"
 
 mkdir -p "$BASE_DIR" "$RUN_DIR"
 
@@ -19,7 +20,11 @@ if [ ! -f "$BINARY" ]; then
 fi
 
 cleanup_runtime_files() {
-  rm -f "$PID_FILE" "$SOCKET_FILE" "$STATE_FILE"
+  rm -f \
+    "$PID_FILE" \
+    "$SOCKET_FILE" \
+    "$STATE_FILE" \
+    "$KASUMI_RULE_SNAPSHOT_FILE"
 }
 
 chmod 755 "$BINARY"
