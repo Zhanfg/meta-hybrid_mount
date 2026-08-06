@@ -24,14 +24,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import textwrap
           from pathlib import Path
 
           lines = Path('.github/workflows/apply-review-round2.yml').read_text().splitlines()
           start = next(index for index, line in enumerate(lines) if line.strip() == "python3 - <<'PY'") + 1
           end = next(index for index in range(start, len(lines)) if lines[index].strip() == 'PY')
-          script = textwrap.dedent('\n'.join(lines[start:end])) + '\n'
-          Path('/tmp/apply_round2.py').write_text(script)
+          prefix = ' ' * 10
+          script_lines = [line[len(prefix):] if line.startswith(prefix) else line for line in lines[start:end]]
+          Path('/tmp/apply_round2.py').write_text('\n'.join(script_lines) + '\n')
           PY
 
           python3 /tmp/apply_round2.py
