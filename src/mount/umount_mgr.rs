@@ -221,8 +221,12 @@ fn register_target(target: &Path) -> Result<()> {
 fn scan_ksu_driver_fd() -> Option<RawFd> {
     let entries = fs::read_dir("/proc/self/fd").ok()?;
     for entry in entries.flatten() {
-        let fd = entry.file_name().to_string_lossy().parse::<RawFd>().ok()?;
-        let target = fs::read_link(entry.path()).ok()?;
+        let Ok(fd) = entry.file_name().to_string_lossy().parse::<RawFd>() else {
+            continue;
+        };
+        let Ok(target) = fs::read_link(entry.path()) else {
+            continue;
+        };
         if target.to_string_lossy().contains("[ksu_driver]") {
             return Some(fd);
         }
