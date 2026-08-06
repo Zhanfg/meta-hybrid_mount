@@ -146,11 +146,10 @@ pub fn add_user_hide_rule(path: &Path) -> Result<bool> {
     updated.push(path);
     commit_user_hide_rules(&previous, &updated)?;
 
-    // The legacy command dispatcher interprets `true` as "issue one more
-    // direct hide ioctl". The complete runtime has already been rebuilt, so
-    // return false to prevent a duplicate kernel rule. The WebUI only uses
-    // command success and reloads the authoritative list afterwards.
-    Ok(false)
+    // The dispatcher issues one final direct hide ioctl when this returns
+    // true. Kasumi deduplicates both the hide path and its parent inject rule,
+    // so the call is idempotent while preserving the correct API result.
+    Ok(true)
 }
 
 pub fn remove_user_hide_rule(path: &Path) -> Result<bool> {
