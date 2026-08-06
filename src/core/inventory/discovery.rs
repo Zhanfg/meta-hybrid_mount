@@ -4,7 +4,7 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, ErrorKind},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -58,9 +58,10 @@ pub fn scan_snapshot(cfg: &config::Config) -> Result<InventorySnapshot> {
     };
     summary.blacklisted_modules.sort();
     let mut skipped_reserved = 0usize;
+    let mut skipped_non_directories = 0usize;
+    let mut skipped_non_modules = 0usize;
     let mut skipped_blocked = 0usize;
     let mut skipped_blacklisted = 0usize;
-    let mut skipped_missing_prop = 0usize;
     let mut root_entries_scanned = 0usize;
     let mut marker_directory_scans = 0usize;
 
@@ -69,44 +70,56 @@ pub fn scan_snapshot(cfg: &config::Config) -> Result<InventorySnapshot> {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if !file_type.is_dir() {
-            bail!(
-                "module directory contains a non-directory entry: {}",
+            skipped_non_directories += 1;
+            crate::scoped_log!(
+                warn,
+                "scanner",
+                "skip: path={}, reason=non_directory_entry",
                 entry.path().display()
             );
+            continue;
         }
 
         let path = entry.path();
-        let id = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| anyhow::anyhow!("module directory name is not valid UTF-8"))?;
+        let file_name = entry.file_name();
 
-        if inventory::is_reserved_module_dir(&id) {
+        if file_name
+            .to_str()
+            .is_some_and(inventory::is_reserved_module_dir)
+        {
             skipped_reserved += 1;
-            crate::scoped_log!(debug, "scanner", "skip: module={}, reason=reserved_dir", id);
+            crate::scoped_log!(
+                debug,
+                "scanner",
+                "skip: module={}, reason=reserved_dir",
+                file_name.to_string_lossy()
+            );
             continue;
         }
+
+        if !has_regular_module_prop(&path)? {
+            skipped_non_modules += 1;
+            crate::scoped_log!(
+                warn,
+                "scanner",
+                "skip: module={}, reason=missing_regular_module_prop",
+                file_name.to_string_lossy()
+            );
+            continue;
+        }
+
+        let id = file_name
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("module directory name is not valid UTF-8"))?;
+        let prop = path.join("module.prop");
+        validate_module_id(&id).with_context(|| format!("invalid module directory name: {id}"))?;
+        validate_module_prop_id(&prop, &id)?;
 
         marker_directory_scans += 1;
         let block_markers = inventory::mount_block_markers(&path)?;
         if block_markers.contains(&crate::defs::SKIP_MOUNT_FILE_NAME) {
             summary.skip_mount_modules.push(id.clone());
         }
-
-        validate_module_id(&id).with_context(|| format!("invalid module directory name: {id}"))?;
-
-        let prop = path.join("module.prop");
-        if !prop.is_file() {
-            skipped_missing_prop += 1;
-            crate::scoped_log!(
-                debug,
-                "scanner",
-                "skip: module={}, reason=missing_module_prop",
-                id
-            );
-            continue;
-        }
-        validate_module_prop_id(&prop, &id)?;
 
         if cfg.module_blacklist.contains(&id) {
             skipped_blacklisted += 1;
@@ -136,17 +149,19 @@ pub fn scan_snapshot(cfg: &config::Config) -> Result<InventorySnapshot> {
     crate::scoped_log!(
         info,
         "scanner",
-        "complete: total_dirs={}, active_modules={}, skipped_reserved={}, skipped_blocked={}, skipped_blacklisted={}, skipped_missing_prop={}, root_entries_scanned={}, marker_directory_scans={}, elapsed_ms={}",
+        "complete: total_entries={}, active_modules={}, skipped_reserved={}, skipped_non_directories={}, skipped_non_modules={}, skipped_blocked={}, skipped_blacklisted={}, root_entries_scanned={}, marker_directory_scans={}, elapsed_ms={}",
         modules.len()
             + skipped_reserved
+            + skipped_non_directories
+            + skipped_non_modules
             + skipped_blocked
-            + skipped_blacklisted
-            + skipped_missing_prop,
+            + skipped_blacklisted,
         modules.len(),
         skipped_reserved,
+        skipped_non_directories,
+        skipped_non_modules,
         skipped_blocked,
         skipped_blacklisted,
-        skipped_missing_prop,
         root_entries_scanned,
         marker_directory_scans,
         started.elapsed().as_millis()
@@ -157,6 +172,17 @@ pub fn scan_snapshot(cfg: &config::Config) -> Result<InventorySnapshot> {
     summary.skip_mount_modules.dedup();
 
     Ok(InventorySnapshot { modules, summary })
+}
+
+pub(crate) fn has_regular_module_prop(module_path: &Path) -> Result<bool> {
+    let prop = module_path.join("module.prop");
+    match fs::symlink_metadata(&prop) {
+        Ok(metadata) => Ok(metadata.file_type().is_file()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect module.prop {}", prop.display()))
+        }
+    }
 }
 
 pub(crate) fn validate_module_prop_id(prop: &Path, dir_id: &str) -> Result<()> {
@@ -212,17 +238,52 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_missing_module_prop_and_keeps_valid_modules() {
+    fn scan_skips_directory_without_regular_module_prop() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir(temp.path().join("incomplete")).unwrap();
-        let valid = temp.path().join("valid");
-        fs::create_dir(&valid).unwrap();
-        write_prop(&valid, "valid");
+        fs::create_dir(temp.path().join("helper:dir")).unwrap();
 
         let modules = scan(&test_config(temp.path())).unwrap();
 
-        assert_eq!(modules.len(), 1);
-        assert_eq!(modules[0].id, "valid");
+        assert!(modules.is_empty());
+    }
+
+    #[test]
+    fn scan_skips_directory_with_module_prop_directory() {
+        let temp = TempDir::new().unwrap();
+        let module_dir = temp.path().join("alpha");
+        fs::create_dir(&module_dir).unwrap();
+        fs::create_dir(module_dir.join("module.prop")).unwrap();
+
+        let modules = scan(&test_config(temp.path())).unwrap();
+
+        assert!(modules.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_skips_directory_with_symlinked_module_prop() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let module_dir = temp.path().join("alpha");
+        fs::create_dir(&module_dir).unwrap();
+        let external_prop = temp.path().join("external.prop");
+        fs::write(&external_prop, "id=alpha\n").unwrap();
+        symlink(external_prop, module_dir.join("module.prop")).unwrap();
+
+        let modules = scan(&test_config(temp.path())).unwrap();
+
+        assert!(modules.is_empty());
+    }
+
+    #[test]
+    fn scan_skips_non_directory_root_entries() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("manager.lock"), b"").unwrap();
+
+        let modules = scan(&test_config(temp.path())).unwrap();
+
+        assert!(modules.is_empty());
     }
 
     #[test]
