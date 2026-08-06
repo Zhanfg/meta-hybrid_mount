@@ -90,10 +90,14 @@ fn remove_managed_receipt() -> Result<()> {
     }
 }
 
-fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
-    let mut guard = managed_session()
+fn cached_managed_session() -> Result<Option<ManagedLkmSession>> {
+    Ok(managed_session()
         .lock()
-        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?;
+        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?
+        .clone())
+}
+
+fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
     let payload = serde_json::to_vec_pretty(&session)
         .context("failed to serialize Kasumi LKM ownership receipt")?;
     crate::sys::fs::atomic_write(defs::KASUMI_LKM_OWNER_FILE, payload).with_context(|| {
@@ -102,7 +106,10 @@ fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
             defs::KASUMI_LKM_OWNER_FILE
         )
     })?;
-    *guard = Some(session);
+    *managed_session()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? =
+        Some(session);
     Ok(())
 }
 
@@ -146,12 +153,9 @@ fn current_boot_id() -> Result<String> {
 
 fn load_managed_session() -> Result<Option<ManagedLkmSession>> {
     let boot_id = current_boot_id().context("failed to read current boot id")?;
+    let cached_session = cached_managed_session()?;
 
-    if let Some(session) = managed_session()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?
-        .clone()
-    {
+    if let Some(session) = cached_session {
         if session.boot_id == boot_id {
             return Ok(Some(session));
         }
