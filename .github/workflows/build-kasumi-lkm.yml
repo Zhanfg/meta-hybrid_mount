@@ -12,10 +12,15 @@ on:
         required: false
         default: false
         type: boolean
-      kasumi_ref:
-        description: "Kasumi git ref (branch/tag/commit)"
+      kasumi_repo:
+        description: "Kasumi repository in owner/name form"
         required: false
-        default: "main"
+        default: "Zhanfg/Kasumi"
+        type: string
+      kasumi_ref:
+        description: "Audited Kasumi commit"
+        required: false
+        default: "4aab6b519dadae6f43776f66a208ea5ae0fc8a3e"
         type: string
       ddk_release:
         description: "DDK release version"
@@ -29,10 +34,15 @@ on:
         required: false
         default: false
         type: boolean
-      kasumi_ref:
-        description: "Kasumi git ref (branch/tag/commit)"
+      kasumi_repo:
+        description: "Kasumi repository in owner/name form"
         required: false
-        default: "main"
+        default: "Zhanfg/Kasumi"
+        type: string
+      kasumi_ref:
+        description: "Audited Kasumi commit"
+        required: false
+        default: "4aab6b519dadae6f43776f66a208ea5ae0fc8a3e"
         type: string
       ddk_release:
         description: "DDK release version"
@@ -48,16 +58,20 @@ jobs:
     steps:
       - name: Resolve Kasumi UAPI
         id: resolve
+        env:
+          KASUMI_REPO: ${{ inputs.kasumi_repo }}
+          KASUMI_REF: ${{ inputs.kasumi_ref }}
         run: |
           set -euo pipefail
 
           git init kasumi_src
           (
             cd kasumi_src
-            git remote add origin "https://github.com/Anatdx/Kasumi.git"
-            git fetch --depth 1 origin "${{ inputs.kasumi_ref }}"
-            git checkout FETCH_HEAD
+            git remote add origin "https://github.com/${KASUMI_REPO}.git"
+            git fetch --no-tags origin "$KASUMI_REF"
+            git checkout --detach FETCH_HEAD
             SHA="$(git rev-parse HEAD)"
+            test "$SHA" = "$KASUMI_REF"
             test -s src/include/kasumi_uapi.h
             cp src/include/kasumi_uapi.h "$GITHUB_WORKSPACE/kasumi_uapi.h"
             echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -91,5 +105,6 @@ jobs:
     with:
       kmi: ${{ matrix.kmi }}
       arch: ${{ matrix.arch }}
+      kasumi_repo: ${{ inputs.kasumi_repo }}
       kasumi_ref: ${{ needs.export-kasumi-uapi.outputs.sha }}
       ddk_release: ${{ inputs.ddk_release }}
