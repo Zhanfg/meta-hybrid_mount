@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/apply_reconciliation.py
           cargo fmt --all
+          cargo fmt --all -- --check
           git diff --check
           sh -n scripts/check-kasumi-uapi-compat.sh
           bash scripts/check-kasumi-uapi-compat.sh
