@@ -84,6 +84,16 @@ fn target_is_forbidden(target: &Path) -> bool {
             .any(|root| target.starts_with(root))
 }
 
+fn ensure_target_allowed(target: &Path) -> Result<()> {
+    if target_is_forbidden(target) {
+        bail!(
+            "custom bind target is inside a protected runtime root: {}",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
 fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> {
     if !source.is_absolute() {
         bail!("custom bind source must be an absolute path");
@@ -94,24 +104,20 @@ fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> 
     if source == target {
         bail!("custom bind source and target must differ");
     }
-    if target_is_forbidden(target) {
-        bail!(
-            "custom bind target is inside a protected runtime root: {}",
-            target.display()
-        );
-    }
+    ensure_target_allowed(target)?;
 
     let source_meta = fs::metadata(source)
         .with_context(|| format!("failed to inspect source {}", source.display()))?;
     let target_meta = fs::metadata(target)
         .with_context(|| format!("failed to inspect target {}", target.display()))?;
+    let source_real = fs::canonicalize(source)
+        .with_context(|| format!("failed to resolve source {}", source.display()))?;
+    let target_real = fs::canonicalize(target)
+        .with_context(|| format!("failed to resolve target {}", target.display()))?;
+    ensure_target_allowed(&target_real)?;
 
     match (source_meta.is_dir(), target_meta.is_dir()) {
         (true, true) => {
-            let source_real = fs::canonicalize(source)
-                .with_context(|| format!("failed to resolve source {}", source.display()))?;
-            let target_real = fs::canonicalize(target)
-                .with_context(|| format!("failed to resolve target {}", target.display()))?;
             if source_real == target_real
                 || source_real.starts_with(&target_real)
                 || target_real.starts_with(&source_real)
@@ -125,10 +131,6 @@ fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> 
             Ok(CustomBindKind::Directory)
         }
         (false, false) => {
-            let source_real = fs::canonicalize(source)
-                .with_context(|| format!("failed to resolve source {}", source.display()))?;
-            let target_real = fs::canonicalize(target)
-                .with_context(|| format!("failed to resolve target {}", target.display()))?;
             if source_real == target_real {
                 bail!("custom bind source and target resolve to the same file");
             }
@@ -231,6 +233,20 @@ mod tests {
             validate_mount_paths(Path::new("/missing-source"), Path::new("/proc/sys"))
                 .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_rejects_symlink_into_protected_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        symlink("/proc", &target).unwrap();
+
+        assert!(validate_mount_paths(&source, &target).is_err());
     }
 
     #[test]
