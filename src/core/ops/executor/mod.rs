@@ -34,6 +34,8 @@ pub struct ExecutionResult {
     pub kasumi_module_ids: Vec<String>,
     pub kasumi_runtime_enabled: bool,
     pub mount_stats: MountStatistics,
+    #[cfg(feature = "kasumi")]
+    kasumi_guard: KasumiRuntimeGuard,
 }
 
 impl ExecutionResult {
@@ -46,6 +48,11 @@ impl ExecutionResult {
         {
             0
         }
+    }
+
+    pub(crate) fn commit_runtime(&mut self) {
+        #[cfg(feature = "kasumi")]
+        self.kasumi_guard.disarm();
     }
 }
 
@@ -71,16 +78,17 @@ impl Drop for KasumiRuntimeGuard {
         if !self.armed {
             return;
         }
+
         match crate::mount::kasumi::rollback_runtime() {
             Ok(()) => crate::scoped_log!(
                 warn,
                 "executor",
-                "Kasumi runtime rolled back after execution failure"
+                "Kasumi runtime rolled back after transaction failure"
             ),
             Err(error) => crate::scoped_log!(
                 error,
                 "executor",
-                "Kasumi runtime rollback incomplete: error={:#}",
+                "Kasumi rollback incomplete: error={:#}",
                 error
             ),
         }
@@ -145,7 +153,7 @@ impl Executor {
         }
 
         #[cfg(feature = "kasumi")]
-        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_available);
+        let kasumi_guard = KasumiRuntimeGuard::new(kasumi_available);
         #[cfg(feature = "kasumi")]
         let final_kasumi_ids = plan.kasumi_module_ids.clone();
         #[cfg(feature = "kasumi")]
@@ -292,15 +300,8 @@ impl Executor {
         }
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        if !config.disable_umount
-            && let Err(error) = umount_mgr::commit()
-        {
-            crate::scoped_log!(
-                warn,
-                "executor",
-                "umountable mount-list commit failed after successful mounts: error={:#}",
-                error
-            );
+        if !config.disable_umount {
+            umount_mgr::commit().context("Failed to commit umountable mount list")?;
         }
 
         let result_overlay: Vec<String> = final_overlay_ids.into_iter().collect();
@@ -320,9 +321,6 @@ impl Executor {
             kasumi_count
         );
 
-        #[cfg(feature = "kasumi")]
-        kasumi_guard.disarm();
-
         Ok(ExecutionResult {
             overlay_module_ids: result_overlay,
             overlay_partitions: final_overlay_partitions.into_iter().collect(),
@@ -332,6 +330,8 @@ impl Executor {
             kasumi_module_ids: final_kasumi_ids,
             kasumi_runtime_enabled,
             mount_stats,
+            #[cfg(feature = "kasumi")]
+            kasumi_guard,
         })
     }
 

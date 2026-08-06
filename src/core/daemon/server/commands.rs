@@ -275,10 +275,12 @@ fn dispatch_config(ctx: &CommandContext<'_>, cmd: ConfigCommand) -> Result<Value
             patch,
             apply_runtime,
         } => {
-            let config = patch_config_file(config_path, patch)?;
+            let previous = load_runtime_config_uncached(config_path)?;
+            let config = patched_config(&previous, patch)?;
             let applied = if apply_runtime {
-                apply_runtime_config(&config)?
+                save_and_apply_runtime_config(&previous, &config, config_path)?
             } else {
+                config.save_to_file(config_path)?;
                 false
             };
             ctx.refresh(
@@ -291,8 +293,9 @@ fn dispatch_config(ctx: &CommandContext<'_>, cmd: ConfigCommand) -> Result<Value
             )
         }
         ConfigCommand::Reset => {
+            let previous = load_runtime_config_uncached(config_path)?;
             let config = Config::default();
-            save_and_apply_runtime_config(&config, config_path)?;
+            save_and_apply_runtime_config(&previous, &config, config_path)?;
             ctx.refresh(&config, json!({ "saved": true, "config": &config }))
         }
     }
@@ -478,8 +481,9 @@ fn dispatch_kasumi(ctx: &CommandContext<'_>, cmd: KasumiCommand) -> Result<Value
             ctx.invalidate_and_refresh_message("Kasumi LKM unloaded.")
         }
         KasumiCommand::MapsAdd { rule } => {
-            let updated = add_kasumi_maps_config_rule(config_path, rule)?;
-            apply_runtime_config(&updated)?;
+            let previous = load_runtime_config_uncached(config_path)?;
+            let updated = add_kasumi_maps_config_rule(&previous, rule)?;
+            save_and_apply_runtime_config(&previous, &updated, config_path)?;
             let count = updated.kasumi.maps_rules.len();
             ctx.refresh(
                 &updated,
@@ -491,12 +495,12 @@ fn dispatch_kasumi(ctx: &CommandContext<'_>, cmd: KasumiCommand) -> Result<Value
             )
         }
         KasumiCommand::MapsClear => {
-            let mut updated = load_runtime_config(config_access, config_path)?
+            let previous = load_runtime_config(config_access, config_path)?
                 .as_ref()
                 .clone();
+            let mut updated = previous.clone();
             updated.kasumi.maps_rules.clear();
-            updated.save_to_file(config_path)?;
-            apply_runtime_config(&updated)?;
+            save_and_apply_runtime_config(&previous, &updated, config_path)?;
             ctx.refresh(
                 &updated,
                 json!({
@@ -509,15 +513,18 @@ fn dispatch_kasumi(ctx: &CommandContext<'_>, cmd: KasumiCommand) -> Result<Value
     }
 }
 
-fn patch_config_file(config_path: &Path, patch: Value) -> Result<Config> {
-    let config = Config::load_from_file(config_path)
-        .with_context(|| format!("Failed to load config from path: {}", config_path.display()))?;
+fn patched_config(config: &Config, patch: Value) -> Result<Config> {
     let mut payload = serde_json::to_value(config).context("Failed to encode current config")?;
     merge_json(&mut payload, patch, 0)
         .context("Failed to merge config patch (nesting too deep)")?;
+    serde_json::from_value(payload).context("Failed to decode patched config")
+}
 
-    let config: Config =
-        serde_json::from_value(payload).context("Failed to decode patched config")?;
+#[cfg(test)]
+fn patch_config_file(config_path: &Path, patch: Value) -> Result<Config> {
+    let current = Config::load_from_file(config_path)
+        .with_context(|| format!("Failed to load config from path: {}", config_path.display()))?;
+    let config = patched_config(&current, patch)?;
     config.save_to_file(config_path)?;
     Ok(config)
 }
@@ -600,8 +607,8 @@ fn reboot_device() -> Result<()> {
 }
 
 #[cfg(feature = "kasumi")]
-fn add_kasumi_maps_config_rule(config_path: &Path, rule: Value) -> Result<Config> {
-    let mut config = load_runtime_config_uncached(config_path)?;
+fn add_kasumi_maps_config_rule(config: &Config, rule: Value) -> Result<Config> {
+    let mut config = config.clone();
     let rule: crate::conf::schema::KasumiMapsRuleConfig =
         serde_json::from_value(rule).context("Failed to decode Kasumi maps rule")?;
     config
@@ -609,13 +616,52 @@ fn add_kasumi_maps_config_rule(config_path: &Path, rule: Value) -> Result<Config
         .maps_rules
         .retain(|item| item.target_ino != rule.target_ino || item.target_dev != rule.target_dev);
     config.kasumi.maps_rules.push(rule);
-    config.save_to_file(config_path)?;
     Ok(config)
 }
 
-fn save_and_apply_runtime_config(config: &Config, config_path: &Path) -> Result<bool> {
-    config.save_to_file(config_path)?;
-    apply_runtime_config(config)
+fn save_and_apply_runtime_config(
+    previous: &Config,
+    config: &Config,
+    config_path: &Path,
+) -> Result<bool> {
+    commit_runtime_config_with(previous, config, config_path, apply_runtime_config)
+}
+
+fn commit_runtime_config_with<F>(
+    previous: &Config,
+    config: &Config,
+    config_path: &Path,
+    mut apply: F,
+) -> Result<bool>
+where
+    F: FnMut(&Config) -> Result<bool>,
+{
+    let applied = match apply(config) {
+        Ok(applied) => applied,
+        Err(apply_error) => {
+            return match apply(previous) {
+                Ok(_) => Err(apply_error
+                    .context("Failed to apply updated runtime config; previous runtime restored")),
+                Err(rollback_error) => bail!(
+                    "Runtime config update and rollback both failed: update={apply_error:#}; rollback={rollback_error:#}"
+                ),
+            };
+        }
+    };
+
+    if let Err(save_error) = config.save_to_file(config_path) {
+        return match apply(previous) {
+            Ok(_) => {
+                Err(save_error
+                    .context("Failed to persist runtime config; previous runtime restored"))
+            }
+            Err(rollback_error) => bail!(
+                "Runtime config persistence and rollback both failed: save={save_error:#}; rollback={rollback_error:#}"
+            ),
+        };
+    }
+
+    Ok(applied)
 }
 
 #[cfg(feature = "kasumi")]
@@ -788,5 +834,71 @@ mod tests {
                 apply_runtime: false,
             }
         )));
+    }
+
+    #[test]
+    fn failed_runtime_update_keeps_disk_config_and_restores_previous_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let previous = Config::default();
+        previous.save_to_file(&config_path).unwrap();
+        let mut updated = previous.clone();
+        updated.disable_umount = true;
+        let mut calls = Vec::new();
+
+        let error = commit_runtime_config_with(&previous, &updated, &config_path, |config| {
+            calls.push(config.disable_umount);
+            if config.disable_umount {
+                bail!("simulated runtime failure");
+            }
+            Ok(true)
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("previous runtime restored"));
+        assert_eq!(calls, vec![true, false]);
+        let saved = Config::load_from_file(&config_path).unwrap();
+        assert!(!saved.disable_umount);
+    }
+
+    #[test]
+    fn failed_config_persistence_restores_previous_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous = Config::default();
+        let mut updated = previous.clone();
+        updated.disable_umount = true;
+        let mut calls = Vec::new();
+
+        let error = commit_runtime_config_with(&previous, &updated, temp.path(), |config| {
+            calls.push(config.disable_umount);
+            Ok(true)
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("previous runtime restored"));
+        assert_eq!(calls, vec![true, false]);
+    }
+
+    #[test]
+    fn successful_runtime_transaction_persists_only_after_apply() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let previous = Config::default();
+        previous.save_to_file(&config_path).unwrap();
+        let mut updated = previous.clone();
+        updated.disable_umount = true;
+        let mut observed_disk_values = Vec::new();
+
+        let applied = commit_runtime_config_with(&previous, &updated, &config_path, |config| {
+            let disk = Config::load_from_file(&config_path).unwrap();
+            observed_disk_values.push(disk.disable_umount);
+            Ok(config.disable_umount)
+        })
+        .unwrap();
+
+        assert!(applied);
+        assert_eq!(observed_disk_values, vec![false]);
+        let saved = Config::load_from_file(&config_path).unwrap();
+        assert!(saved.disable_umount);
     }
 }

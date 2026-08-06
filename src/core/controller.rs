@@ -30,6 +30,8 @@ use crate::{
         runtime_finalization,
         storage::StorageHandle,
     },
+    mount::rollback::MountTransaction,
+    partitions,
 };
 
 pub struct Init;
@@ -55,6 +57,7 @@ pub struct MountController<S> {
     backend_capabilities: BackendCapabilities,
     state: S,
     tempdir: PathBuf,
+    mount_transaction: MountTransaction,
 }
 
 impl MountController<Init> {
@@ -62,15 +65,21 @@ impl MountController<Init> {
     where
         P: AsRef<Path>,
     {
+        let tempdir = tempdir.as_ref().to_path_buf();
+        let mount_transaction =
+            MountTransaction::begin(transaction_scope_roots(&config, &tempdir))?;
+
         Ok(Self {
             backend_capabilities: BackendCapabilities::detect(&config)?,
             config,
             state: Init,
-            tempdir: tempdir.as_ref().to_path_buf(),
+            tempdir,
+            mount_transaction,
         })
     }
 
-    pub fn init_storage(self, mnt_base: &Path) -> Result<MountController<StorageReady>> {
+    pub fn init_storage(mut self, mnt_base: &Path) -> Result<MountController<StorageReady>> {
+        self.mount_transaction.add_scope(mnt_base);
         let started = Instant::now();
         crate::scoped_log!(
             info,
@@ -107,6 +116,7 @@ impl MountController<Init> {
             backend_capabilities: self.backend_capabilities,
             state: StorageReady { handle },
             tempdir: self.tempdir,
+            mount_transaction: self.mount_transaction,
         })
     }
 }
@@ -194,6 +204,7 @@ impl MountController<StorageReady> {
                 plan,
             },
             tempdir: self.tempdir,
+            mount_transaction: self.mount_transaction,
         })
     }
 }
@@ -228,42 +239,36 @@ impl MountController<Planned> {
                 inventory_summary: self.state.inventory.summary,
             },
             tempdir: self.tempdir,
+            mount_transaction: self.mount_transaction,
         })
     }
 }
 
 impl MountController<Executed> {
-    pub fn finalize(self) -> Result<()> {
+    pub fn finalize(mut self) -> Result<()> {
         let started = Instant::now();
         crate::scoped_log!(info, "controller:finalize", "start");
-        if let Err(error) = runtime_finalization::finalize(
+
+        // Cleanup remains inside the transaction. A cleanup or state-write
+        // failure therefore rolls back storage, Overlay, Magic and custom
+        // bind mounts rather than leaving a half-started boot environment.
+        clean_up(
+            &self.tempdir,
+            &self.config.kasumi.mirror_path,
+            self.state.handle.mode(),
+            self.config.disable_umount,
+        )?;
+
+        runtime_finalization::finalize(
             &self.config,
             self.state.handle.mode(),
             self.state.handle.mount_point(),
             &self.state.result,
             &self.state.inventory_summary,
-        ) {
-            crate::scoped_log!(
-                warn,
-                "controller:finalize",
-                "mounts are active but runtime finalization failed: error={:#}",
-                error
-            );
-        }
+        )?;
 
-        if let Err(error) = clean_up(
-            &self.tempdir,
-            &self.config.kasumi.mirror_path,
-            self.state.handle.mode(),
-            self.config.disable_umount,
-        ) {
-            crate::scoped_log!(
-                warn,
-                "controller:finalize",
-                "mounts are active but temporary cleanup failed: error={:#}",
-                error
-            );
-        }
+        self.mount_transaction.commit();
+        self.state.result.commit_runtime();
 
         crate::scoped_log!(
             info,
@@ -274,6 +279,22 @@ impl MountController<Executed> {
 
         Ok(())
     }
+}
+
+fn transaction_scope_roots(config: &Config, tempdir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![tempdir.to_path_buf(), config.kasumi.mirror_path.clone()];
+    roots.extend(
+        partitions::managed_partition_names()
+            .into_iter()
+            .map(|partition| Path::new("/").join(partition)),
+    );
+    roots.extend(
+        config
+            .custom_mounts
+            .iter()
+            .map(|mount| mount.target.clone()),
+    );
+    roots
 }
 
 fn clean_up(
