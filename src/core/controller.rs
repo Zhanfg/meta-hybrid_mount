@@ -78,7 +78,8 @@ impl MountController<Init> {
         })
     }
 
-    pub fn init_storage(self, mnt_base: &Path) -> Result<MountController<StorageReady>> {
+    pub fn init_storage(mut self, mnt_base: &Path) -> Result<MountController<StorageReady>> {
+        self.mount_transaction.add_scope(mnt_base);
         let started = Instant::now();
         crate::scoped_log!(
             info,
@@ -281,10 +282,7 @@ impl MountController<Executed> {
 }
 
 fn transaction_scope_roots(config: &Config, tempdir: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![
-        tempdir.to_path_buf(),
-        config.kasumi.mirror_path.clone(),
-    ];
+    let mut roots = vec![tempdir.to_path_buf(), config.kasumi.mirror_path.clone()];
     roots.extend(
         partitions::managed_partition_names()
             .into_iter()
