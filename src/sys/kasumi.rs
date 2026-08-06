@@ -40,6 +40,10 @@ pub const KSM_MAGIC1: c_int = uapi::KSM_MAGIC1 as c_int;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub const KSM_MAGIC2: c_int = uapi::KSM_MAGIC2 as c_int;
 pub const KSM_PROTOCOL_VERSION: c_int = uapi::KSM_PROTOCOL_VERSION as c_int;
+// Protocol 16 is the last known-good integrated-kernel ABI used by the
+// 4.2.0-1838 baseline. Protocol 17 keeps the existing mount ioctls but
+// replaces the legacy hide-UID dispatch with the policy API.
+const KSM_MIN_SUPPORTED_PROTOCOL_VERSION: c_int = 16;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub const KSM_SYSCALL_NR: libc::c_long = uapi::KSM_SYSCALL_NR as libc::c_long;
@@ -456,6 +460,16 @@ pub fn status_name(status: KasumiStatus) -> &'static str {
     }
 }
 
+fn classify_protocol_version(version: c_int) -> KasumiStatus {
+    if version < KSM_MIN_SUPPORTED_PROTOCOL_VERSION {
+        KasumiStatus::KernelNotSupported
+    } else if version > KSM_PROTOCOL_VERSION {
+        KasumiStatus::ModuleTooOld
+    } else {
+        KasumiStatus::Available
+    }
+}
+
 const FEATURE_NAMES: &[(c_int, &str)] = &[
     (KSM_FEATURE_KSTAT_SPOOF, "kstat_spoof"),
     (KSM_FEATURE_UNAME_SPOOF, "uname_spoof"),
@@ -810,11 +824,7 @@ pub fn check_status() -> Result<KasumiStatus> {
     } else if !module_loaded()? {
         KasumiStatus::NotPresent
     } else {
-        match get_protocol_version()? {
-            version if version < KSM_PROTOCOL_VERSION => KasumiStatus::KernelNotSupported,
-            version if version > KSM_PROTOCOL_VERSION => KasumiStatus::ModuleTooOld,
-            _ => KasumiStatus::Available,
-        }
+        classify_protocol_version(get_protocol_version()?)
     };
 
     let mut cache = STATUS_CACHE.lock().map_err(|_| lock_error("status"))?;
@@ -1026,14 +1036,29 @@ fn clear_policy_uids(list: u32) -> Result<()> {
 /// exactly those UIDs receive Kasumi's managed view, so map it to MANUAL +
 /// ALLOW instead of silently receiving `EINVAL` from the obsolete request.
 pub fn set_hide_uids(uids: &[u32]) -> Result<()> {
-    clear_policy_uids(KSM_POLICY_UID_LIST_ALL)?;
+    let protocol = get_protocol_version().context("failed to select Kasumi hide-UID API")?;
 
-    if uids.is_empty() {
-        return set_policy(KSM_POLICY_OWNER_AUTO, 0);
+    match protocol {
+        KSM_MIN_SUPPORTED_PROTOCOL_VERSION => {
+            let mut arg = KasumiUidListArg::from_slice(uids);
+            ioctl_with_arg("set_hide_uids", KSM_IOC_SET_HIDE_UIDS, &mut arg)
+        }
+        KSM_PROTOCOL_VERSION => {
+            clear_policy_uids(KSM_POLICY_UID_LIST_ALL)?;
+
+            if uids.is_empty() {
+                return set_policy(KSM_POLICY_OWNER_AUTO, 0);
+            }
+
+            set_policy_uids(KSM_POLICY_UID_LIST_ALLOW, uids)?;
+            set_policy(KSM_POLICY_OWNER_MANUAL, KSM_POLICY_FLAG_USE_ALLOW_UIDS)
+        }
+        _ => bail!(
+            "unsupported Kasumi protocol {protocol}; supported range is {}..={}",
+            KSM_MIN_SUPPORTED_PROTOCOL_VERSION,
+            KSM_PROTOCOL_VERSION
+        ),
     }
-
-    set_policy_uids(KSM_POLICY_UID_LIST_ALLOW, uids)?;
-    set_policy(KSM_POLICY_OWNER_MANUAL, KSM_POLICY_FLAG_USE_ALLOW_UIDS)
 }
 
 pub fn fix_mounts() -> Result<()> {
@@ -1134,4 +1159,33 @@ pub fn invalidate_status_cache() -> Result<()> {
     cache.checked = false;
     cache.status = KasumiStatus::NotPresent;
     Ok(())
+}
+
+#[cfg(test)]
+mod protocol_compat_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_protocol_16_baseline_and_protocol_17_current() {
+        assert_eq!(
+            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION),
+            KasumiStatus::Available
+        );
+        assert_eq!(
+            classify_protocol_version(KSM_PROTOCOL_VERSION),
+            KasumiStatus::Available
+        );
+    }
+
+    #[test]
+    fn rejects_protocols_outside_the_supported_range() {
+        assert_eq!(
+            classify_protocol_version(KSM_MIN_SUPPORTED_PROTOCOL_VERSION - 1),
+            KasumiStatus::KernelNotSupported
+        );
+        assert_eq!(
+            classify_protocol_version(KSM_PROTOCOL_VERSION + 1),
+            KasumiStatus::ModuleTooOld
+        );
+    }
 }
