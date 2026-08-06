@@ -41,8 +41,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Format codes
         run: cargo fmt --all -- --check
+      - name: Check Kasumi protocol 16/17 ABI
+        run: bash scripts/check-kasumi-uapi-compat.sh
       - name: Clippy code
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Clippy lite feature set
+        run: cargo clippy -p hybrid-mount --no-default-features --features control-plane --lib -- -D warnings
+      - name: Clippy nano feature set
+        run: cargo clippy -p hybrid-mount --no-default-features --lib -- -D warnings
       - name: Run unit tests
         run: cargo test --workspace --all-features
       - name: Check lite feature set
