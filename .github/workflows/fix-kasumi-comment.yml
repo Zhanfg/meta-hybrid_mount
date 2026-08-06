@@ -28,17 +28,19 @@ jobs:
 
           path = Path('src/sys/kasumi.rs')
           text = path.read_text()
-          old = '''/// Configure the legacy `hide_uids` setting through protocol 17's manual
-/// policy API. Protocol 17 still defines ioctl 21 for source compatibility,
-/// but no longer dispatches it. An explicit Hybrid Mount UID list means
-/// exactly those UIDs receive Kasumi's managed view, so map it to MANUAL +
-/// ALLOW instead of silently receiving `EINVAL` from the obsolete request.
-'''
-          new = '''/// Configure the legacy `hide_uids` setting through the ABI selected at
-/// runtime. Protocol 16 dispatches ioctl 21 directly. Protocol 17 keeps that
-/// request only for source compatibility, so explicit UIDs are translated to
-/// its MANUAL + ALLOW policy API instead of receiving `EINVAL`.
-'''
+          old = (
+              "/// Configure the legacy `hide_uids` setting through protocol 17's manual\n"
+              "/// policy API. Protocol 17 still defines ioctl 21 for source compatibility,\n"
+              "/// but no longer dispatches it. An explicit Hybrid Mount UID list means\n"
+              "/// exactly those UIDs receive Kasumi's managed view, so map it to MANUAL +\n"
+              "/// ALLOW instead of silently receiving `EINVAL` from the obsolete request.\n"
+          )
+          new = (
+              "/// Configure the legacy `hide_uids` setting through the ABI selected at\n"
+              "/// runtime. Protocol 16 dispatches ioctl 21 directly. Protocol 17 keeps that\n"
+              "/// request only for source compatibility, so explicit UIDs are translated to\n"
+              "/// its MANUAL + ALLOW policy API instead of receiving `EINVAL`.\n"
+          )
           if text.count(old) != 1:
               raise SystemExit('expected one legacy comment block')
           path.write_text(text.replace(old, new, 1))
