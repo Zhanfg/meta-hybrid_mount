@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{
     conf::config::Config,
@@ -32,33 +32,18 @@ pub fn finalize(
         result.kasumi_count()
     );
 
-    let state = match RuntimeState::build_from_execution(
+    let state = RuntimeState::build_from_execution(
         config,
         storage_mode,
         mount_point,
         result,
         inventory,
-    ) {
-        Ok(state) => state,
-        Err(error) => {
-            crate::scoped_log!(
-                warn,
-                "runtime_finalization",
-                "mounts are active but runtime state collection failed: error={:#}",
-                error
-            );
-            return Ok(());
-        }
-    };
+    )
+    .context("failed to collect runtime state for completed mount transaction")?;
 
-    if let Err(error) = state.save() {
-        crate::scoped_log!(
-            warn,
-            "runtime_finalization",
-            "mounts are active but runtime state persistence failed: error={:#}",
-            error
-        );
-    }
+    state
+        .save()
+        .context("failed to persist runtime state for completed mount transaction")?;
 
     crate::scoped_log!(
         info,
