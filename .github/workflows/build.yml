@@ -10,6 +10,7 @@ on:
     branches:
       - 'dev'
       - 'fix/**'
+      - 'review/**'
     paths:
       - 'src/**'
       - 'Cargo.*'
@@ -17,8 +18,10 @@ on:
       - 'webui'
       - 'webui/**'
       - 'xtask/**'
+      - 'tests/**'
       - 'build.rs'
       - 'scripts/build-local.sh'
+      - 'scripts/check-kasumi-uapi-compat.sh'
       - 'tools/notify/**'
       - '.github/workflows/build-kasumi-lkm.yml'
       - '.github/workflows/kasumi-lkm.yml'
@@ -33,8 +36,10 @@ on:
       - 'webui'
       - 'webui/**'
       - 'xtask/**'
+      - 'tests/**'
       - 'build.rs'
       - 'scripts/build-local.sh'
+      - 'scripts/check-kasumi-uapi-compat.sh'
       - 'tools/notify/**'
       - '.github/workflows/build-kasumi-lkm.yml'
       - '.github/workflows/kasumi-lkm.yml'
@@ -84,6 +89,9 @@ jobs:
 
       - name: Trust checkout directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check Kasumi protocol 16/17 ABI
+        run: bash scripts/check-kasumi-uapi-compat.sh
 
       - name: Download Kasumi LKM artifacts
         uses: actions/download-artifact@v8
