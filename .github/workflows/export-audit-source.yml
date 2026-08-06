@@ -1,0 +1,33 @@
+name: Export Audit Source
+
+on:
+  push:
+    branches:
+      - 'audit/triple-review-1838'
+    paths:
+      - '.github/workflows/export-audit-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Create deterministic source archive
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix=hybrid-source/ -o hybrid-source.tar.gz HEAD
+          sha256sum hybrid-source.tar.gz > hybrid-source.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hybrid-audit-source
+          path: |
+            hybrid-source.tar.gz
+            hybrid-source.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
