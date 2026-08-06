@@ -92,6 +92,22 @@ impl ModuleRules {
         }
         prefixes
     }
+
+    /// Build an execution-only fallback rule set for a module whose Kasumi
+    /// mirror could not be prepared. Existing Overlay, Magic and Ignore
+    /// decisions are preserved; only Kasumi-selected paths become Magic.
+    pub fn with_kasumi_fallback_to_magic(&self) -> Self {
+        let mut fallback = self.clone();
+        if matches!(fallback.default_mode, MountMode::Kasumi) {
+            fallback.default_mode = MountMode::Magic;
+        }
+        for mode in fallback.paths.values_mut() {
+            if matches!(*mode, MountMode::Kasumi) {
+                *mode = MountMode::Magic;
+            }
+        }
+        fallback
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +192,28 @@ mod tests {
         assert!(prefixes.contains("vendor"));
         assert!(!prefixes.contains("system/app/private"));
         assert!(!prefixes.contains("vendor/lib"));
+    }
+
+    #[test]
+    fn kasumi_fallback_preserves_non_kasumi_decisions() {
+        let rules = make_rules(
+            MountMode::Kasumi,
+            &[
+                ("system/app", MountMode::Overlay),
+                ("system/lib", MountMode::Magic),
+                ("system/etc", MountMode::Ignore),
+                ("vendor/lib", MountMode::Kasumi),
+            ],
+        );
+
+        let fallback = rules.with_kasumi_fallback_to_magic();
+
+        assert_eq!(fallback.default_mode, MountMode::Magic);
+        assert_eq!(fallback.get_mode("system/app/example"), MountMode::Overlay);
+        assert_eq!(fallback.get_mode("system/lib/example"), MountMode::Magic);
+        assert_eq!(fallback.get_mode("system/etc/example"), MountMode::Ignore);
+        assert_eq!(fallback.get_mode("vendor/lib/example"), MountMode::Magic);
+        assert_eq!(rules.default_mode, MountMode::Kasumi);
+        assert_eq!(rules.get_mode("vendor/lib/example"), MountMode::Kasumi);
     }
 }
