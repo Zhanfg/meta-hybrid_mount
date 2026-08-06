@@ -87,27 +87,20 @@ fn scanned_modules_payload_includes_module_prop_metadata() {
 }
 
 #[test]
-fn scanned_modules_payload_skips_directory_without_module_prop() {
+fn scanned_modules_payload_skips_non_module_entries() {
     let temp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(temp.path().join("incomplete")).unwrap();
-    let valid_dir = temp.path().join("valid");
-    fs::create_dir_all(&valid_dir).unwrap();
-    fs::write(
-        valid_dir.join("module.prop"),
-        "id=valid\nname=Valid\nversion=1.0\nauthor=Alice\ndescription=Valid module\n",
-    )
-    .unwrap();
+    fs::create_dir_all(temp.path().join("TA_utl")).unwrap();
+    fs::write(temp.path().join("manager.lock"), b"").unwrap();
 
     let config = Config {
         moduledir: temp.path().to_path_buf(),
         ..Default::default()
     };
+    let state = RuntimeState::default();
 
-    let modules =
-        build_scanned_modules_payload(&config, &RuntimeState::default(), temp.path()).unwrap();
+    let modules = build_scanned_modules_payload(&config, &state, temp.path()).unwrap();
 
-    assert_eq!(modules.len(), 1);
-    assert_eq!(modules[0].id, "valid");
+    assert!(modules.is_empty());
 }
 
 #[test]
