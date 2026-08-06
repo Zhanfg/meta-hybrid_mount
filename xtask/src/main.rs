@@ -110,7 +110,7 @@ enum Commands {
     Build {
         #[arg(long)]
         release: bool,
-        #[arg(long, value_enum, default_value = "lite")]
+        #[arg(long, value_enum, default_value = "full")]
         flavor: BuildFlavor,
         #[arg(long)]
         skip_webui: bool,
@@ -293,7 +293,7 @@ fn build_package(
     fs::create_dir_all(&stage_dir)?;
 
     if flavor.includes_webui() && !skip_webui {
-        build_webui(&version_info.clean_version, webui_release)?;
+        build_webui(&version_info.clean_version, webui_release, flavor)?;
     }
 
     for arch in target_archs {
@@ -364,10 +364,6 @@ fn configure_flavor_config(stage_dir: &Path, flavor: BuildFlavor) -> Result<()> 
     let mut table = content
         .parse::<toml::Table>()
         .with_context(|| format!("failed to parse staged config {}", config_path.display()))?;
-
-    if !flavor.enable_kasumi() {
-        table.remove("kasumi");
-    }
 
     if matches!(flavor, BuildFlavor::Nano) {
         table.insert(
@@ -582,8 +578,8 @@ fn generate_module_prop(stage_dir: &Path, info: &VersionInfo, flavor: BuildFlavo
     Ok(())
 }
 
-fn build_webui(version: &str, is_release: bool) -> Result<()> {
-    generate_webui_constants(version, is_release)?;
+fn build_webui(version: &str, is_release: bool, flavor: BuildFlavor) -> Result<()> {
+    generate_webui_constants(version, is_release, flavor)?;
     let webui_dir = Path::new("webui");
     let pnpm = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
     let status = Command::new(pnpm)
@@ -597,6 +593,10 @@ fn build_webui(version: &str, is_release: bool) -> Result<()> {
         .current_dir(webui_dir)
         .env("HYBRID_MOUNT_WEBUI_VERSION", version)
         .env("HYBRID_MOUNT_WEBUI_RELEASE", is_release.to_string())
+        .env(
+            "HYBRID_MOUNT_WEBUI_ENABLE_KASUMI",
+            flavor.enable_kasumi().to_string(),
+        )
         .args(["run", "build"])
         .status()?;
     if !status.success() {
@@ -605,11 +605,12 @@ fn build_webui(version: &str, is_release: bool) -> Result<()> {
     Ok(())
 }
 
-fn generate_webui_constants(version: &str, is_release: bool) -> Result<()> {
+fn generate_webui_constants(version: &str, is_release: bool, flavor: BuildFlavor) -> Result<()> {
     let path = Path::new("webui/src/lib/constants_gen.ts");
     let content = build_meta_shared::render_webui_constants(
         version,
         is_release,
+        flavor.enable_kasumi(),
         build_meta_shared::defs::CONFIG_FILE,
         build_meta_shared::defs::STATE_FILE,
         &format!(
@@ -645,10 +646,10 @@ fn compile_core(release: bool, _arch: Arch, flavor: BuildFlavor) -> Result<()> {
     if release {
         cmd.arg("-r");
     }
-    cmd.arg("--no-default-features");
-    if flavor.enable_kasumi() {
-        cmd.args(["--features", "kasumi"]);
-    } else if flavor.enable_control_plane() {
+    if !flavor.enable_kasumi() {
+        cmd.arg("--no-default-features");
+    }
+    if flavor.enable_control_plane() && !flavor.enable_kasumi() {
         cmd.args(["--features", "control-plane"]);
     }
     let mut ret = cmd.spawn()?;
@@ -744,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn lite_config_removes_kasumi_configuration() {
+    fn lite_config_keeps_the_canonical_config_shape() {
         let temp = TestDir::new("xtask-lite-config");
         fs::write(
             temp.path().join("config.toml"),
@@ -763,7 +764,7 @@ enabled = false
             .parse::<toml::Table>()
             .unwrap();
 
-        assert!(!table.contains_key("kasumi"));
+        assert!(table.contains_key("kasumi"));
         assert_eq!(
             table.get("default_mode").and_then(toml::Value::as_str),
             Some("overlay")
@@ -790,7 +791,7 @@ enabled = false
             .parse::<toml::Table>()
             .unwrap();
 
-        assert!(!table.contains_key("kasumi"));
+        assert!(table.contains_key("kasumi"));
         assert_eq!(
             table.get("default_mode").and_then(toml::Value::as_str),
             Some("magic")

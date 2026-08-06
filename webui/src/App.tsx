@@ -28,6 +28,8 @@ import {
 import { uiStore } from "./lib/stores/uiStore";
 import { configStore } from "./lib/stores/configStore";
 import { sysStore } from "./lib/stores/sysStore";
+import { features } from "./lib/features";
+import { ENABLE_KASUMI } from "./lib/constants_gen";
 import { API } from "./lib/api";
 import { getErrorMessage } from "./lib/api/core/error";
 import { onSseStateUpdate, stopSse } from "./lib/api/core/bridge";
@@ -40,12 +42,23 @@ const loadConfigTab = () => import("./routes/ConfigTab");
 const loadModulesTab = () => import("./routes/ModulesTab");
 const loadInfoTab = () => import("./routes/InfoTab");
 
+function createKasumiRoute() {
+  const loadKasumiTab = () => import("./routes/KasumiTab");
+  return { id: "kasumi", load: loadKasumiTab, component: lazy(loadKasumiTab) };
+}
+
 const routes = [
   { id: "status", load: loadStatusTab, component: lazy(loadStatusTab) },
   { id: "config", load: loadConfigTab, component: lazy(loadConfigTab) },
+  ...(ENABLE_KASUMI ? [createKasumiRoute()] : []),
   { id: "modules", load: loadModulesTab, component: lazy(loadModulesTab) },
   { id: "info", load: loadInfoTab, component: lazy(loadInfoTab) },
 ];
+
+async function loadKasumiStore() {
+  const module = await import("./lib/stores/kasumiStore");
+  return module.kasumiStore;
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = createSignal("status");
@@ -69,7 +82,9 @@ export default function App() {
   const preloadedRouteIds = new Set<string>();
   let disposed = false;
 
-  const visibleRoutes = createMemo(() => routes);
+  const visibleRoutes = createMemo(() =>
+    routes.filter((route) => route.id !== "kasumi" || features.kasumiEnabled),
+  );
   const visibleTabs = createMemo(() => visibleRoutes().map((r) => r.id));
   const tabCount = createMemo(() => Math.max(visibleTabs().length, 1));
   const isAppReady = createMemo(() => initialDataReady());
@@ -239,6 +254,9 @@ export default function App() {
       if (disposed) return;
       sysStore.loadFromInit(payload);
       configStore.loadFromInit(payload);
+      if (ENABLE_KASUMI) {
+        await initializeKasumi(payload);
+      }
       if (disposed) return;
       onSseStateUpdate((event) => sysStore.handleSseUpdate(event.payload));
       setInitialDataReady(true);
@@ -249,6 +267,27 @@ export default function App() {
       setInitializationError(message);
       uiStore.showToast(message, "error");
     }
+  }
+
+  async function initializeKasumi(
+    payload: Awaited<ReturnType<typeof API.init>>,
+  ) {
+    const kasumiStore = await loadKasumiStore();
+    if (disposed) return;
+    kasumiStore.loadFromInit(payload);
+    features.setKasumiStatus(
+      kasumiStore.enabled,
+      kasumiStore.status.available,
+      kasumiStore.status.kernel_supported,
+    );
+    onSseStateUpdate((event) => {
+      kasumiStore.handleSseUpdate(event.payload);
+      features.setKasumiStatus(
+        kasumiStore.enabled,
+        kasumiStore.status.available,
+        kasumiStore.status.kernel_supported,
+      );
+    });
   }
 
   return (

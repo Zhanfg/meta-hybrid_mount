@@ -33,6 +33,7 @@ export async function init(): Promise<InitPayload> {
     status: payload.status,
     config: payload.config,
     version: payload.version.version,
+    kasumi_status: payload.kasumi_status,
     system_info: payload.system_info,
   } as InitPayload;
 }
