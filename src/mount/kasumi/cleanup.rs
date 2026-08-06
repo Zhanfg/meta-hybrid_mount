@@ -7,15 +7,10 @@ use anyhow::{Result, bail};
 use super::common::feature_supported;
 use crate::sys::kasumi::{
     self, KSM_FEATURE_CMDLINE_SPOOF, KSM_FEATURE_MAPS_SPOOF, KSM_FEATURE_MOUNT_HIDE,
-    KSM_FEATURE_SELINUX_FIX, KSM_FEATURE_STATFS_SPOOF, KSM_FEATURE_UNAME_SPOOF,
-    KasumiSpoofUname,
+    KSM_FEATURE_SELINUX_FIX, KSM_FEATURE_STATFS_SPOOF, KSM_FEATURE_UNAME_SPOOF, KasumiSpoofUname,
 };
 
-fn record_cleanup_error(
-    errors: &mut Vec<String>,
-    operation: &'static str,
-    result: Result<()>,
-) {
+fn record_cleanup_error(errors: &mut Vec<String>, operation: &'static str, result: Result<()>) {
     if let Err(error) = result {
         errors.push(format!("{operation}: {error:#}"));
     }
@@ -40,23 +35,11 @@ pub fn rollback_runtime() -> Result<()> {
         }
     };
 
-    record_cleanup_error(
-        &mut errors,
-        "disable runtime",
-        kasumi::set_enabled(false),
-    );
+    record_cleanup_error(&mut errors, "disable runtime", kasumi::set_enabled(false));
     record_cleanup_error(&mut errors, "clear mount rules", kasumi::clear_rules());
-    record_cleanup_error(
-        &mut errors,
-        "clear maps rules",
-        kasumi::clear_maps_rules(),
-    );
+    record_cleanup_error(&mut errors, "clear maps rules", kasumi::clear_maps_rules());
     record_cleanup_error(&mut errors, "disable debug", kasumi::set_debug(false));
-    record_cleanup_error(
-        &mut errors,
-        "disable stealth",
-        kasumi::set_stealth(false),
-    );
+    record_cleanup_error(&mut errors, "disable stealth", kasumi::set_stealth(false));
     record_cleanup_error(
         &mut errors,
         "clear hidden UID policy",
