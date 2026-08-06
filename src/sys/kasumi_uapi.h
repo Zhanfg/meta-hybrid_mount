@@ -179,7 +179,6 @@ struct kasumi_spoof_uname {
 /*
  * cmdline spoofing structure - spoof /proc/cmdline
  */
-#define KSM_FAKE_CMDLINE_SIZE 4096
 struct kasumi_spoof_cmdline {
     char cmdline[KSM_FAKE_CMDLINE_SIZE];               /* Fake cmdline content */
     int err;
