@@ -58,6 +58,9 @@ fn gen_kasumi_uapi_bindings() -> Result<()> {
 #ifndef __u32
 typedef uint32_t __u32;
 #endif
+#ifndef __s32
+typedef int32_t __s32;
+#endif
 #ifndef __aligned_u64
 typedef uint64_t __aligned_u64;
 #endif
