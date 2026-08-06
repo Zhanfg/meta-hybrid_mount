@@ -61,29 +61,58 @@ pub fn resolve_link_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(feature = "kasumi")]
-pub fn resolve_path_with_root(system_root: &Path, path: &Path) -> io::Result<PathBuf> {
-    let virtual_path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        Path::new("/").join(path)
-    };
+fn path_entry_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
 
-    let translated_path = if system_root == Path::new("/") {
-        virtual_path.clone()
+#[cfg(feature = "kasumi")]
+pub fn resolve_path_with_root(system_root: &Path, path: &Path) -> io::Result<PathBuf> {
+    if !system_root.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("system root must be absolute: {}", system_root.display()),
+        ));
+    }
+
+    let canonical_root = fs::canonicalize(system_root).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to resolve system root {}: {error}",
+                system_root.display()
+            ),
+        )
+    })?;
+    let virtual_path = normalize_path(if path.is_absolute() {
+        path
     } else {
-        let relative = virtual_path.strip_prefix("/").map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("virtual path must be absolute: {error}"),
-            )
-        })?;
-        system_root.join(relative)
-    };
+        &Path::new("/").join(path)
+    });
+    let relative = virtual_path.strip_prefix("/").map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("virtual path must be absolute: {error}"),
+        )
+    })?;
+    let translated_path = normalize_path(&canonical_root.join(relative));
+    if !translated_path.starts_with(&canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "translated path {} escaped system root {}",
+                translated_path.display(),
+                canonical_root.display()
+            ),
+        ));
+    }
 
     let parent = translated_path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "translated path has no parent")
     })?;
-
     let filename = translated_path.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -92,45 +121,68 @@ pub fn resolve_path_with_root(system_root: &Path, path: &Path) -> io::Result<Pat
     })?;
 
     let mut current = parent.to_path_buf();
-    let mut suffix = Vec::new();
-
-    while current != system_root && !current.exists() {
-        if let Some(name) = current.file_name() {
-            suffix.push(name.to_os_string());
-        }
+    let mut missing_suffix = Vec::new();
+    while current != canonical_root && !path_entry_exists(&current)? {
+        let name = current.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("path has no component below root: {}", current.display()),
+            )
+        })?;
+        missing_suffix.push(name.to_os_string());
         if !current.pop() {
             break;
         }
     }
 
-    if !current.exists() {
+    if !path_entry_exists(&current)? {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("no existing ancestor for {}", translated_path.display()),
         ));
     }
-    let mut resolved = current;
 
-    for item in suffix.iter().rev() {
-        resolved.push(item);
-    }
-    resolved.push(filename);
-
-    if system_root == Path::new("/") {
-        return Ok(resolved);
-    }
-
-    let relative = resolved.strip_prefix(system_root).map_err(|error| {
+    let mut resolved = fs::canonicalize(&current).map_err(|error| {
         io::Error::new(
-            io::ErrorKind::InvalidData,
+            error.kind(),
             format!(
-                "resolved path {} escaped root {}: {error}",
-                resolved.display(),
-                system_root.display()
+                "failed to resolve existing ancestor {}: {error}",
+                current.display()
             ),
         )
     })?;
-    Ok(Path::new("/").join(relative))
+    if canonical_root != Path::new("/") && !resolved.starts_with(&canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "resolved ancestor {} escaped system root {}",
+                resolved.display(),
+                canonical_root.display()
+            ),
+        ));
+    }
+
+    for component in missing_suffix.iter().rev() {
+        resolved.push(component);
+    }
+    resolved.push(filename);
+    let resolved = normalize_path(&resolved);
+
+    if canonical_root == Path::new("/") {
+        return Ok(resolved);
+    }
+
+    let relative = resolved.strip_prefix(&canonical_root).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "resolved path {} escaped system root {}: {error}",
+                resolved.display(),
+                canonical_root.display()
+            ),
+        )
+    })?;
+    Ok(normalize_path(&Path::new("/").join(relative)))
 }
 
 #[cfg(test)]
@@ -158,6 +210,51 @@ mod tests {
         assert_eq!(
             normalize_path(Path::new("system/../vendor")),
             PathBuf::from("vendor")
+        );
+    }
+
+    #[cfg(all(feature = "kasumi", unix))]
+    #[test]
+    fn rooted_resolution_follows_parent_symlinks_and_preserves_filename() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir_all(root.join("system")).unwrap();
+        fs::create_dir_all(root.join("vendor")).unwrap();
+        symlink("../vendor", root.join("system/link")).unwrap();
+
+        assert_eq!(
+            resolve_path_with_root(&root, Path::new("/system/link/file")).unwrap(),
+            PathBuf::from("/vendor/file")
+        );
+    }
+
+    #[cfg(all(feature = "kasumi", unix))]
+    #[test]
+    fn rooted_resolution_rejects_parent_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(root.join("system")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("system/link")).unwrap();
+
+        assert!(resolve_path_with_root(&root, Path::new("/system/link/file")).is_err());
+    }
+
+    #[cfg(feature = "kasumi")]
+    #[test]
+    fn rooted_resolution_preserves_missing_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir_all(root.join("system")).unwrap();
+
+        assert_eq!(
+            resolve_path_with_root(&root, Path::new("/system/missing/sub/file")).unwrap(),
+            PathBuf::from("/system/missing/sub/file")
         );
     }
 }

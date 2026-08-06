@@ -6,7 +6,7 @@ use std::{
     collections::HashSet,
     fs,
     os::unix::fs::{FileTypeExt, MetadataExt},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -32,16 +32,30 @@ pub(super) struct CompiledRules {
 }
 
 fn mirror_module_root(config: &config::Config, module: &Module) -> Result<PathBuf> {
-    let module_root = config.kasumi.mirror_path.join(&module.id);
-    if module_root.exists() {
-        Ok(module_root)
-    } else {
-        bail!(
-            "missing Kasumi mirror content for module {} at {}",
-            module.id,
-            module_root.display()
+    let mirror_root = fs::canonicalize(&config.kasumi.mirror_path).with_context(|| {
+        format!(
+            "failed to resolve Kasumi mirror root {}",
+            config.kasumi.mirror_path.display()
         )
+    })?;
+    let requested_module_root = config.kasumi.mirror_path.join(&module.id);
+    let module_root = fs::canonicalize(&requested_module_root).with_context(|| {
+        format!(
+            "missing or invalid Kasumi mirror content for module {} at {}",
+            module.id,
+            requested_module_root.display()
+        )
+    })?;
+
+    if module_root == mirror_root || !module_root.starts_with(&mirror_root) {
+        bail!(
+            "Kasumi mirror module root escaped the configured mirror: module={}, root={}, mirror={}",
+            module.id,
+            module_root.display(),
+            mirror_root.display()
+        );
     }
+    Ok(module_root)
 }
 
 fn build_dtype(path: &Path) -> Result<(i32, bool)> {
@@ -95,6 +109,18 @@ fn relative_mode(module: &Module, relative: &Path) -> MountMode {
     module.rules.get_mode(relative_str.as_ref())
 }
 
+fn virtual_target_is_managed(target: &Path, managed_partitions: &HashSet<String>) -> bool {
+    let Ok(relative) = target.strip_prefix("/") else {
+        return false;
+    };
+    let Some(Component::Normal(partition)) = relative.components().next() else {
+        return false;
+    };
+    partition
+        .to_str()
+        .is_some_and(|partition| managed_partitions.contains(partition))
+}
+
 pub(super) fn compile_rules(
     modules: &[Module],
     plan: &MountPlan,
@@ -104,7 +130,7 @@ pub(super) fn compile_rules(
     let managed_partitions = build_managed_partitions(config);
     let active_ids: HashSet<&str> = plan.kasumi_module_ids.iter().map(String::as_str).collect();
     let mut compiled = CompiledRules::default();
-    let mut managed_partition_list: Vec<String> = managed_partitions.into_iter().collect();
+    let mut managed_partition_list: Vec<String> = managed_partitions.iter().cloned().collect();
     managed_partition_list.sort();
 
     for module in modules.iter().rev() {
@@ -117,12 +143,27 @@ pub(super) fn compile_rules(
         let mut symlink_directory_skips = 0usize;
 
         for partition_name in &managed_partition_list {
-            let partition_root = module_root.join(partition_name);
-            if !partition_root.is_dir() {
+            let requested_partition_root = module_root.join(partition_name);
+            if !requested_partition_root.is_dir() {
                 continue;
             }
-            let normalized_partition_root = utils::resolve_link_path(&partition_root)?;
-            if !scanned_partition_roots.insert(normalized_partition_root) {
+            let partition_root = fs::canonicalize(&requested_partition_root).with_context(|| {
+                format!(
+                    "failed to resolve Kasumi partition root for module {}: {}",
+                    module.id,
+                    requested_partition_root.display()
+                )
+            })?;
+            if partition_root == module_root || !partition_root.starts_with(&module_root) {
+                bail!(
+                    "Kasumi partition source escaped the module mirror: module={}, partition={}, root={}, module_root={}",
+                    module.id,
+                    partition_name,
+                    partition_root.display(),
+                    module_root.display()
+                );
+            }
+            if !scanned_partition_roots.insert(partition_root.clone()) {
                 crate::scoped_log!(
                     debug,
                     "mount:kasumi",
@@ -151,15 +192,16 @@ pub(super) fn compile_rules(
                 }
 
                 let path = entry.path();
-                let relative = path.strip_prefix(&module_root).with_context(|| {
+                let relative_in_partition = path.strip_prefix(&partition_root).with_context(|| {
                     format!(
-                        "Kasumi path {} is outside module root {}",
+                        "Kasumi path {} is outside partition root {}",
                         path.display(),
-                        module_root.display()
+                        partition_root.display()
                     )
                 })?;
+                let relative = Path::new(partition_name).join(relative_in_partition);
 
-                if !matches!(relative_mode(module, relative), MountMode::Kasumi) {
+                if !matches!(relative_mode(module, &relative), MountMode::Kasumi) {
                     continue;
                 }
 
@@ -168,7 +210,15 @@ pub(super) fn compile_rules(
                 }
 
                 let resolved_virtual_path =
-                    utils::resolve_path_with_root(system_root, &Path::new("/").join(relative))?;
+                    utils::resolve_path_with_root(system_root, &Path::new("/").join(&relative))?;
+                if !virtual_target_is_managed(&resolved_virtual_path, &managed_partitions) {
+                    bail!(
+                        "Kasumi target escaped managed partitions: module={}, source={}, target={}",
+                        module.id,
+                        path.display(),
+                        resolved_virtual_path.display()
+                    );
+                }
                 let target_key = resolved_virtual_path.display().to_string();
 
                 if entry.file_type().is_dir() {
@@ -216,4 +266,20 @@ pub(super) fn compile_rules(
     }
 
     Ok(compiled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kasumi_targets_must_remain_in_managed_partitions() {
+        let managed = HashSet::from(["system".to_string(), "vendor".to_string()]);
+
+        assert!(virtual_target_is_managed(Path::new("/system/etc/file"), &managed));
+        assert!(virtual_target_is_managed(Path::new("/vendor/lib64/file"), &managed));
+        assert!(!virtual_target_is_managed(Path::new("/data/local/tmp/file"), &managed));
+        assert!(!virtual_target_is_managed(Path::new("/"), &managed));
+        assert!(!virtual_target_is_managed(Path::new("relative/path"), &managed));
+    }
 }
