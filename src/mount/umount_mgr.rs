@@ -9,17 +9,16 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use anyhow::Result;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use anyhow::Context;
+use anyhow::Result;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use ksu::{TryUmount, TryUmountFlags};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use procfs::process::Process;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-static PENDING: LazyLock<Mutex<HashSet<PathBuf>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static PENDING: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub fn send_umountable<P>(target: P) -> Result<()>
 where
