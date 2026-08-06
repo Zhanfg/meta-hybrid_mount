@@ -111,6 +111,7 @@ function buildMockLkmStatus(): KasumiLkmStatus {
   const { kasumi } = mockState;
   return {
     loaded: kasumi.lkmLoaded,
+    managed: true,
     module_name: "kasumi_lkm",
     autoload: kasumi.lkmAutoload,
     kmi_override: kasumi.kmiOverride,

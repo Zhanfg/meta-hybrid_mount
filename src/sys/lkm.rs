@@ -19,6 +19,7 @@ use crate::{conf::schema::KasumiConfig, defs, sys::kasumi};
 #[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub struct LkmStatus {
     pub loaded: bool,
+    pub managed: bool,
     pub module_name: Option<String>,
     pub autoload: bool,
     pub kmi_override: String,
@@ -173,14 +174,18 @@ pub fn is_loaded() -> Result<bool> {
 
 pub fn status(config: &KasumiConfig) -> Result<LkmStatus> {
     let module_name = loaded_module_name()?;
+    let managed = module_name.as_deref() == Some(defs::KASUMI_LKM_MODULE_NAME);
+    let current_kmi = current_kmi().unwrap_or_else(|error| format!("unavailable: {error:#}"));
+    let module_file = resolve_module_file(config).unwrap_or_default();
     Ok(LkmStatus {
         loaded: module_name.is_some(),
+        managed,
         module_name,
         autoload: config.lkm_autoload,
         kmi_override: config.lkm_kmi_override.clone(),
-        current_kmi: current_kmi()?,
+        current_kmi,
         search_dir: config.lkm_dir.clone(),
-        module_file: resolve_module_file(config)?,
+        module_file,
     })
 }
 

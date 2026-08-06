@@ -23,6 +23,7 @@ export default function LkmSection(props: LkmSectionProps) {
   const autoloadText = props.lkm.autoload
     ? uiStore.L.kasumi.autoloadOn
     : uiStore.L.kasumi.autoloadOff;
+  const externallyManaged = props.lkm.loaded && !props.lkm.managed;
 
   return (
     <SectionShell
@@ -82,7 +83,7 @@ export default function LkmSection(props: LkmSectionProps) {
             : uiStore.L.kasumi.enableAutoload}
         </md-outlined-button>
         <md-filled-button
-          disabled={props.pending}
+          disabled={props.pending || externallyManaged}
           onClick={() =>
             props.lkm.loaded
               ? props.onShowUnloadWarning()

@@ -49,6 +49,55 @@ impl ExecutionResult {
     }
 }
 
+#[cfg(feature = "kasumi")]
+struct KasumiRuntimeGuard {
+    armed: bool,
+}
+
+#[cfg(feature = "kasumi")]
+impl KasumiRuntimeGuard {
+    fn new(armed: bool) -> Self {
+        Self { armed }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(feature = "kasumi")]
+impl Drop for KasumiRuntimeGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Err(error) = crate::sys::kasumi::set_enabled(false) {
+            crate::scoped_log!(
+                error,
+                "executor",
+                "Kasumi rollback disable failed: error={:#}",
+                error
+            );
+        }
+        if let Err(error) = crate::sys::kasumi::clear_rules() {
+            crate::scoped_log!(
+                error,
+                "executor",
+                "Kasumi rollback rule cleanup failed: error={:#}",
+                error
+            );
+        }
+        if let Err(error) = crate::sys::kasumi::clear_maps_rules() {
+            crate::scoped_log!(
+                error,
+                "executor",
+                "Kasumi rollback maps cleanup failed: error={:#}",
+                error
+            );
+        }
+    }
+}
+
 pub struct Executor;
 
 impl Executor {
@@ -104,6 +153,33 @@ impl Executor {
             )
             .into());
         }
+
+        #[cfg(feature = "kasumi")]
+        let final_kasumi_ids = plan.kasumi_module_ids.clone();
+        #[cfg(feature = "kasumi")]
+        let kasumi_runtime_enabled = if config.kasumi.enabled {
+            kasumi.apply_runtime(plan, modules).map_err(|error| {
+                ModuleStageFailure::new(
+                    FailureStage::Execute,
+                    final_kasumi_ids.clone(),
+                    anyhow::anyhow!(
+                        "Failed to apply Kasumi before other mount backends: {:#}",
+                        error
+                    ),
+                )
+            })?
+        } else {
+            crate::scoped_log!(
+                debug,
+                "executor",
+                "kasumi disabled: skip_runtime_apply=true"
+            );
+            false
+        };
+        #[cfg(feature = "kasumi")]
+        let mut kasumi_guard = KasumiRuntimeGuard::new(kasumi_runtime_enabled);
+        #[cfg(not(feature = "kasumi"))]
+        let kasumi_runtime_enabled = false;
 
         if Self::is_supported()? {
             crate::scoped_log!(info, "executor", "overlayfs: supported=true");
@@ -172,15 +248,6 @@ impl Executor {
             );
         }
 
-        #[cfg(feature = "kasumi")]
-        {
-            plan.kasumi_add_rules.clear();
-            plan.kasumi_merge_rules.clear();
-            plan.kasumi_hide_rules.clear();
-        }
-        #[cfg(feature = "kasumi")]
-        let final_kasumi_ids = plan.kasumi_module_ids.clone();
-
         let magic_need_list: Vec<String> = final_magic_ids.iter().cloned().collect();
 
         if !magic_need_list.is_empty() {
@@ -220,28 +287,25 @@ impl Executor {
         mount_stats.merge(&custom_stats);
 
         #[cfg(feature = "kasumi")]
-        let kasumi_runtime_enabled = if config.kasumi.enabled {
-            kasumi.apply_runtime(plan, modules).map_err(|err| {
-                ModuleStageFailure::new(
-                    FailureStage::Execute,
-                    final_kasumi_ids.clone(),
-                    anyhow::anyhow!("Failed to apply Kasumi late rules: {:#}", err),
-                )
-            })?
-        } else {
+        if kasumi_runtime_enabled && let Err(error) = crate::sys::kasumi::fix_mounts() {
             crate::scoped_log!(
-                debug,
+                warn,
                 "executor",
-                "kasumi disabled: skip_runtime_apply=true"
+                "Kasumi mount-id refresh failed after other backends: error={:#}",
+                error
             );
-            false
-        };
-        #[cfg(not(feature = "kasumi"))]
-        let kasumi_runtime_enabled = false;
+        }
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        if !config.disable_umount {
-            umount_mgr::commit().context("Failed to commit umountable mount list")?;
+        if !config.disable_umount
+            && let Err(error) = umount_mgr::commit()
+        {
+            crate::scoped_log!(
+                warn,
+                "executor",
+                "umountable mount-list commit failed after successful mounts: error={:#}",
+                error
+            );
         }
 
         let result_overlay: Vec<String> = final_overlay_ids.into_iter().collect();
@@ -260,6 +324,9 @@ impl Executor {
             custom_mount_targets.len(),
             kasumi_count
         );
+
+        #[cfg(feature = "kasumi")]
+        kasumi_guard.disarm();
 
         Ok(ExecutionResult {
             overlay_module_ids: result_overlay,

@@ -62,4 +62,50 @@ impl MountPlan {
             0
         }
     }
+
+    #[cfg(feature = "kasumi")]
+    pub fn degrade_kasumi_to_magic(&mut self) -> usize {
+        let mut downgraded = std::mem::take(&mut self.kasumi_module_ids);
+        let changed = downgraded.len();
+        self.magic_module_ids.append(&mut downgraded);
+        self.magic_module_ids.sort();
+        self.magic_module_ids.dedup();
+        self.kasumi_add_rules.clear();
+        self.kasumi_merge_rules.clear();
+        self.kasumi_hide_rules.clear();
+        changed
+    }
+}
+
+#[cfg(all(test, feature = "kasumi"))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{KasumiAddRule, KasumiMergeRule, MountPlan};
+
+    #[test]
+    fn kasumi_downgrade_preserves_module_coverage_and_clears_rules() {
+        let mut plan = MountPlan {
+            magic_module_ids: vec!["existing".to_string()],
+            kasumi_module_ids: vec!["b".to_string(), "a".to_string(), "existing".to_string()],
+            kasumi_add_rules: vec![KasumiAddRule {
+                target: "/system/a".to_string(),
+                source: PathBuf::from("/dev/a"),
+                file_type: 1,
+            }],
+            kasumi_merge_rules: vec![KasumiMergeRule {
+                target: "/system/b".to_string(),
+                source: PathBuf::from("/dev/b"),
+            }],
+            kasumi_hide_rules: vec!["/system/c".to_string()],
+            ..MountPlan::default()
+        };
+
+        assert_eq!(plan.degrade_kasumi_to_magic(), 3);
+        assert_eq!(plan.magic_module_ids, vec!["a", "b", "existing"]);
+        assert!(plan.kasumi_module_ids.is_empty());
+        assert!(plan.kasumi_add_rules.is_empty());
+        assert!(plan.kasumi_merge_rules.is_empty());
+        assert!(plan.kasumi_hide_rules.is_empty());
+    }
 }

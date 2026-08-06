@@ -144,6 +144,11 @@ pub fn cleanup_artifacts(storage_mode: StorageMode) -> Result<()> {
     Ok(())
 }
 
+pub fn cleanup_failed_setup(mount_point: &Path, image_path: &Path) -> Result<()> {
+    detach_existing_mount(mount_point)?;
+    reset_image_files(image_path)
+}
+
 fn should_cleanup_image(storage_mode: StorageMode) -> bool {
     matches!(storage_mode, StorageMode::Ext4)
 }

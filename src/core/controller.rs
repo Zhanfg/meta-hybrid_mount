@@ -14,8 +14,6 @@ use anyhow::{Context, Result};
 use rustix::mount::{UnmountFlags, unmount as umount};
 
 #[cfg(feature = "kasumi")]
-use crate::core::failure::ModuleStageFailure;
-#[cfg(feature = "kasumi")]
 use crate::core::kasumi_coordinator::KasumiCoordinator;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use crate::sys::mount::is_mounted;
@@ -141,6 +139,8 @@ impl MountController<StorageReady> {
             self.state.handle.mount_point(),
             &self.backend_capabilities,
         )?;
+        #[cfg(feature = "kasumi")]
+        let mut plan = plan;
         let prepare_elapsed_ms = prepare_started.elapsed().as_millis();
 
         crate::scoped_log!(
@@ -168,19 +168,21 @@ impl MountController<StorageReady> {
         #[cfg(feature = "kasumi")]
         {
             let kasumi = KasumiCoordinator::new(&self.config);
-            kasumi
-                .prepare_mirror_storage(
-                    &self.backend_capabilities,
-                    modules,
-                    &plan,
-                    self.state.handle.mount_point(),
-                )
-                .map_err(|err| {
-                    ModuleStageFailure::sync(
-                        plan.kasumi_module_ids.clone(),
-                        anyhow::anyhow!("Failed to prepare Kasumi mirror storage: {:#}", err),
-                    )
-                })?;
+            if let Err(error) = kasumi.prepare_mirror_storage(
+                &self.backend_capabilities,
+                modules,
+                &plan,
+                self.state.handle.mount_point(),
+            ) {
+                let changed = plan.degrade_kasumi_to_magic();
+                crate::scoped_log!(
+                    warn,
+                    "controller:scan_and_prepare_plan",
+                    "Kasumi mirror preparation failed; downgraded current boot to Magic Mount: modules={}, persistent_config_unchanged=true, error={:#}",
+                    changed,
+                    error
+                );
+            }
         }
 
         Ok(MountController {

@@ -69,6 +69,7 @@ export interface SystemInfo {
 
 export interface KasumiLkmStatus {
   loaded: boolean;
+  managed: boolean;
   module_name: string | null;
   autoload: boolean;
   kmi_override: string;

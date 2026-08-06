@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::{
     conf::config::{Config, OverlayMode},
@@ -83,16 +83,40 @@ impl<'a> KasumiCoordinator<'a> {
         );
         let mirror_path = validate_mirror_path(&self.config.kasumi.mirror_path)?;
 
-        let kasumi_storage = storage::setup_with_sources(
+        let image_path = Path::new(defs::KASUMI_IMG_FILE);
+        let kasumi_storage = match storage::setup_with_sources(
             &mirror_path,
             &kasumi_sources,
             matches!(self.config.overlay_mode, OverlayMode::Ext4),
             &self.config.mountsource,
             true,
-            Path::new(defs::KASUMI_IMG_FILE),
-        )?;
+            image_path,
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                if let Err(cleanup_error) = storage::cleanup_failed_setup(&mirror_path, image_path)
+                {
+                    bail!(
+                        "Kasumi mirror setup failed and cleanup also failed: setup={:#}; cleanup={:#}",
+                        error,
+                        cleanup_error
+                    );
+                }
+                return Err(error).context("failed to set up Kasumi mirror storage");
+            }
+        };
 
-        mirror_sync::sync_modules(&kasumi_modules, kasumi_storage.mount_point())?;
+        if let Err(error) = mirror_sync::sync_modules(&kasumi_modules, kasumi_storage.mount_point())
+        {
+            if let Err(cleanup_error) = storage::cleanup_failed_setup(&mirror_path, image_path) {
+                bail!(
+                    "Kasumi mirror synchronization failed and cleanup also failed: sync={:#}; cleanup={:#}",
+                    error,
+                    cleanup_error
+                );
+            }
+            return Err(error).context("failed to synchronize Kasumi mirror modules");
+        }
 
         crate::scoped_log!(
             info,

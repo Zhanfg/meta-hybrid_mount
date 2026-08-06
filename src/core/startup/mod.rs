@@ -46,13 +46,15 @@ where
 
     utils::check_ksu();
 
-    let mut config = match load_config() {
+    let config = match load_config() {
         Ok(config) => config,
         Err(error) => {
             crate::scoped_log!(error, "startup", "config load failed: error={:#}", error);
             return Err(error);
         }
     };
+    #[cfg(feature = "kasumi")]
+    let mut config = config;
 
     #[cfg(feature = "kasumi")]
     if config.kasumi.enabled {
