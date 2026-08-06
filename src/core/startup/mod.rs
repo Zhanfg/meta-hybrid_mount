@@ -46,7 +46,7 @@ where
 
     utils::check_ksu();
 
-    let config = match load_config() {
+    let mut config = match load_config() {
         Ok(config) => config,
         Err(error) => {
             crate::scoped_log!(error, "startup", "config load failed: error={:#}", error);
@@ -56,13 +56,60 @@ where
 
     #[cfg(feature = "kasumi")]
     if config.kasumi.enabled {
-        let loaded = sys::lkm::autoload_if_needed(&config.kasumi)?;
-        if loaded {
+        let mut kasumi_ready = false;
+
+        match sys::lkm::autoload_if_needed(&config.kasumi) {
+            Ok(loaded) => {
+                if loaded {
+                    crate::scoped_log!(
+                        info,
+                        "startup",
+                        "kasumi lkm autoload: loaded=true, dir={}",
+                        config.kasumi.lkm_dir.display()
+                    );
+                }
+
+                match sys::kasumi::check_status() {
+                    Ok(sys::kasumi::KasumiStatus::Available) => {
+                        kasumi_ready = true;
+                    }
+                    Ok(status) => {
+                        crate::scoped_log!(
+                            warn,
+                            "startup",
+                            "kasumi backend unavailable after autoload: status={}",
+                            sys::kasumi::status_name(status)
+                        );
+                    }
+                    Err(error) => {
+                        crate::scoped_log!(
+                            warn,
+                            "startup",
+                            "kasumi backend probe failed after autoload: error={:#}",
+                            error
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                crate::scoped_log!(
+                    warn,
+                    "startup",
+                    "kasumi lkm autoload failed: dir={}, override={}, error={:#}",
+                    config.kasumi.lkm_dir.display(),
+                    config.kasumi.lkm_kmi_override,
+                    error
+                );
+            }
+        }
+
+        if !kasumi_ready {
+            let changed = config.degrade_kasumi_to_magic();
             crate::scoped_log!(
-                info,
+                warn,
                 "startup",
-                "kasumi lkm autoload: loaded=true, dir={}",
-                config.kasumi.lkm_dir.display()
+                "kasumi disabled for current boot; rules downgraded to magic: changed={}, persistent_config_unchanged=true",
+                changed
             );
         }
     } else {
