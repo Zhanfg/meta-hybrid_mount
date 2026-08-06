@@ -1030,11 +1030,10 @@ fn clear_policy_uids(list: u32) -> Result<()> {
     ensure_kernel_err("Kasumi clear_policy_uids", arg.err)
 }
 
-/// Configure the legacy `hide_uids` setting through protocol 17's manual
-/// policy API. Protocol 17 still defines ioctl 21 for source compatibility,
-/// but no longer dispatches it. An explicit Hybrid Mount UID list means
-/// exactly those UIDs receive Kasumi's managed view, so map it to MANUAL +
-/// ALLOW instead of silently receiving `EINVAL` from the obsolete request.
+/// Configure the legacy `hide_uids` setting through the ABI selected at
+/// runtime. Protocol 16 dispatches ioctl 21 directly. Protocol 17 keeps that
+/// request only for source compatibility, so explicit UIDs are translated to
+/// its MANUAL + ALLOW policy API instead of receiving `EINVAL`.
 pub fn set_hide_uids(uids: &[u32]) -> Result<()> {
     let protocol = get_protocol_version().context("failed to select Kasumi hide-UID API")?;
 
