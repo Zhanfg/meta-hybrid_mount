@@ -8,6 +8,7 @@ use std::{
     io::{BufRead, BufReader, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     os::fd::AsRawFd,
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -19,7 +20,7 @@ use anyhow::{Context, Error, Result};
 use serde_json::{Value, json};
 
 use super::super::protocol::DaemonResponse;
-use crate::core::runtime_state::RuntimeState;
+use crate::{core::runtime_state::RuntimeState, defs};
 
 pub(super) struct WebuiHttpState {
     pub(super) listener: TcpListener,
@@ -442,9 +443,12 @@ fn parse_content_length(value: &str) -> Result<usize> {
 }
 
 fn allocate_request_body(content_length: usize) -> Result<Vec<u8>> {
-    // Size already validated by parse_content_length; kept as a safety belt.
     debug_assert!(content_length <= MAX_WEBUI_HTTP_BODY_BYTES);
     Ok(vec![0; content_length])
+}
+
+fn webui_config_path_is_allowed(path: &Path) -> bool {
+    path == Path::new(defs::CONFIG_FILE)
 }
 
 fn handle_http_request(
@@ -514,6 +518,16 @@ fn handle_http_request(
         }
     };
     let config_path = request.config_path;
+    if !webui_config_path_is_allowed(&config_path) {
+        write_http_json(
+            stream,
+            403,
+            "Forbidden",
+            &DaemonResponse::error("WebUI RPC may only use the canonical configuration path"),
+            ConnectionAction::Close,
+        )?;
+        return Ok(ConnectionAction::Close);
+    }
     let effective_config = super::commands::load_runtime_config(config_access, &config_path)?;
     let ctx = super::commands::CommandContext::new(
         &effective_config,
@@ -595,9 +609,6 @@ fn parse_query_param<'a>(request_line: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-// Token is passed via query parameter because the browser EventSource API
-// does not support custom headers. The listener binds 127.0.0.1 only, so the
-// token is not exposed over the network.
 fn handle_sse_endpoint(
     state: &Arc<Mutex<RuntimeState>>,
     shutdown: &Arc<AtomicBool>,
@@ -656,8 +667,6 @@ fn handle_sse_endpoint(
     let client_id = sse_clients.insert(sse_stream)?;
     crate::scoped_log!(debug, "daemon:sse", "client registered: id={}", client_id.0);
 
-    // Block until shutdown or client disconnect. Read with 5 s timeout so we
-    // can periodically send an SSE comment keepalive.
     const KEEPALIVE_SECS: u64 = 30;
     const READ_TIMEOUT_SECS: u64 = 5;
 
@@ -674,7 +683,6 @@ fn handle_sse_endpoint(
             _ => {}
         }
         if last_keepalive.elapsed().as_secs() >= KEEPALIVE_SECS {
-            // SSE comment line — ignored by clients, keeps TCP alive.
             if let Err(e) = write!(stream, ": keepalive\n\n").and_then(|_| stream.flush()) {
                 crate::scoped_log!(debug, "daemon:sse", "keepalive write failed: {:#}", e);
                 break;
@@ -780,6 +788,13 @@ mod tests {
     }
 
     #[test]
+    fn webui_rpc_only_accepts_the_canonical_config_path() {
+        assert!(webui_config_path_is_allowed(Path::new(defs::CONFIG_FILE)));
+        assert!(!webui_config_path_is_allowed(Path::new("/data/local/tmp/config.toml")));
+        assert!(!webui_config_path_is_allowed(Path::new("config.toml")));
+    }
+
+    #[test]
     fn read_http_request_rejects_long_request_line() {
         let request = format!(
             "GET /{} HTTP/1.1\r\n\r\n",
@@ -827,8 +842,6 @@ mod tests {
         let result = std::panic::catch_unwind(|| {
             let _ = allocate_request_body(MAX_WEBUI_HTTP_BODY_BYTES + 1);
         });
-        // In debug mode this panics due to debug_assert; in release it's a nop.
-        // Either outcome is acceptable — the real guard is parse_content_length.
         let _ = result;
     }
 
