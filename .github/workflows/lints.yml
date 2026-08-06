@@ -41,6 +41,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Format codes
         run: cargo fmt --all -- --check
+      - name: Check module shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            sh -n "$script"
+          done < <(find module -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
       - name: Check Kasumi protocol 16/17 ABI
         run: bash scripts/check-kasumi-uapi-compat.sh
       - name: Clippy code
