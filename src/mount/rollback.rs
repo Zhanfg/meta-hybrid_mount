@@ -45,18 +45,24 @@ impl MountTransaction {
             .into_iter()
             .map(|entry| entry.id)
             .collect();
-        let mut roots = Vec::new();
-        for root in scope_roots {
-            add_scope_candidates(&mut roots, root.as_ref());
-        }
-        roots.sort();
-        roots.dedup();
-
-        Ok(Self {
+        let mut transaction = Self {
             baseline_ids,
-            scope_roots: roots,
+            scope_roots: Vec::new(),
             armed: true,
-        })
+        };
+        for root in scope_roots {
+            transaction.add_scope(root);
+        }
+        Ok(transaction)
+    }
+
+    pub fn add_scope<P>(&mut self, root: P)
+    where
+        P: AsRef<Path>,
+    {
+        add_scope_candidates(&mut self.scope_roots, root.as_ref());
+        self.scope_roots.sort();
+        self.scope_roots.dedup();
     }
 
     /// Mark the complete controller pipeline as successful.
