@@ -144,6 +144,80 @@ jobs:
           echo "ARTIFACT_ZIP=$ZIP_PATH" >> "$GITHUB_ENV"
           echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> "$GITHUB_ENV"
 
+      - name: Validate ${{ matrix.flavor }} package
+        env:
+          BUILD_FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -euo pipefail
+          test -n "${ARTIFACT_ZIP:-}"
+          unzip -tqq "$ARTIFACT_ZIP"
+
+          if unzip -Z1 "$ARTIFACT_ZIP" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "Archive contains an unsafe path."
+            unzip -Z1 "$ARTIFACT_ZIP"
+            exit 1
+          fi
+
+          STAGE_DIR="$(mktemp -d)"
+          trap 'rm -rf "$STAGE_DIR"' EXIT
+          unzip -qq "$ARTIFACT_ZIP" -d "$STAGE_DIR"
+
+          test -s "$STAGE_DIR/module.prop"
+          test -s "$STAGE_DIR/config.toml"
+          test -s "$STAGE_DIR/binaries/hybrid-mount"
+          grep -Fx 'id=hybrid_mount' "$STAGE_DIR/module.prop"
+          grep -Eq '^version=4\.2\.0-[0-9]+$' "$STAGE_DIR/module.prop"
+          grep -Eq '^versionCode=1[0-9]{9}$' "$STAGE_DIR/module.prop"
+          grep -Fx 'metamodule=1' "$STAGE_DIR/module.prop"
+          if grep -q '^updateJson=' "$STAGE_DIR/module.prop"; then
+            echo "Fork development artifact unexpectedly contains updateJson."
+            exit 1
+          fi
+
+          while IFS= read -r -d '' script; do
+            sh -n "$script"
+          done < <(find "$STAGE_DIR" -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
+
+          file "$STAGE_DIR/binaries/hybrid-mount" | grep -Eq 'ELF 64-bit.*ARM aarch64'
+
+          case "$BUILD_FLAVOR" in
+            full)
+              grep -Fx 'name=Hybrid Mount Fork' "$STAGE_DIR/module.prop"
+              grep -Fx 'webuiIcon=launcher.png' "$STAGE_DIR/module.prop"
+              test -d "$STAGE_DIR/webroot"
+              test -s "$STAGE_DIR/launcher.png"
+              test -d "$STAGE_DIR/kasumi_lkm"
+              LKM_COUNT="$(find "$STAGE_DIR/kasumi_lkm" -maxdepth 1 -type f -name '*.ko' | wc -l | tr -d ' ')"
+              test "$LKM_COUNT" -eq 7
+              test ! -e "$STAGE_DIR/.nano"
+              ;;
+            lite)
+              grep -Fx 'name=Hybrid Mount Fork Lite' "$STAGE_DIR/module.prop"
+              grep -Fx 'webuiIcon=launcher.png' "$STAGE_DIR/module.prop"
+              test -d "$STAGE_DIR/webroot"
+              test -s "$STAGE_DIR/launcher.png"
+              test ! -e "$STAGE_DIR/kasumi_lkm"
+              test ! -e "$STAGE_DIR/.nano"
+              ;;
+            nano)
+              grep -Fx 'name=Hybrid Mount Fork Nano' "$STAGE_DIR/module.prop"
+              test -f "$STAGE_DIR/.nano"
+              test ! -e "$STAGE_DIR/webroot"
+              test ! -e "$STAGE_DIR/launcher.png"
+              test ! -e "$STAGE_DIR/kasumi_lkm"
+              if grep -q '^webuiIcon=' "$STAGE_DIR/module.prop"; then
+                echo "Nano artifact unexpectedly declares a WebUI icon."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unknown build flavor: $BUILD_FLAVOR"
+              exit 1
+              ;;
+          esac
+
+          sha256sum "$ARTIFACT_ZIP"
+
       - name: Upload ${{ matrix.flavor }} Artifact
         uses: actions/upload-artifact@v7
         with:
