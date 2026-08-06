@@ -651,7 +651,8 @@ where
     if let Err(save_error) = config.save_to_file(config_path) {
         return match apply(previous) {
             Ok(_) => {
-                Err(save_error.context("Failed to persist runtime config; previous runtime restored"))
+                Err(save_error
+                    .context("Failed to persist runtime config; previous runtime restored"))
             }
             Err(rollback_error) => bail!(
                 "Runtime config persistence and rollback both failed: save={save_error:#}; rollback={rollback_error:#}"
