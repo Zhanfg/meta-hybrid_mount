@@ -12,8 +12,6 @@ use anyhow::{Context, Result, bail};
 
 #[cfg(feature = "kasumi")]
 use crate::core::kasumi_coordinator::KasumiCoordinator;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-use crate::mount::umount_mgr;
 use crate::{
     conf::config,
     core::{
@@ -22,6 +20,7 @@ use crate::{
         ops::plan::{MountPlan, OverlayOperation},
         runtime_state::MountStatistics,
     },
+    mount::umount_mgr,
     utils,
 };
 
@@ -34,6 +33,7 @@ pub struct ExecutionResult {
     pub kasumi_module_ids: Vec<String>,
     pub kasumi_runtime_enabled: bool,
     pub mount_stats: MountStatistics,
+    umount_guard: umount_mgr::UmountRegistrationGuard,
     #[cfg(feature = "kasumi")]
     kasumi_guard: KasumiRuntimeGuard,
 }
@@ -51,6 +51,7 @@ impl ExecutionResult {
     }
 
     pub(crate) fn commit_runtime(&mut self) {
+        self.umount_guard.disarm();
         #[cfg(feature = "kasumi")]
         self.kasumi_guard.disarm();
     }
@@ -299,10 +300,11 @@ impl Executor {
             );
         }
 
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        if !config.disable_umount {
-            umount_mgr::commit().context("Failed to commit umountable mount list")?;
-        }
+        let umount_guard = if config.disable_umount {
+            umount_mgr::UmountRegistrationGuard::empty()
+        } else {
+            umount_mgr::commit().context("Failed to commit umountable mount list")?
+        };
 
         let result_overlay: Vec<String> = final_overlay_ids.into_iter().collect();
         let result_magic: Vec<String> = final_magic_ids.into_iter().collect();
@@ -330,6 +332,7 @@ impl Executor {
             kasumi_module_ids: final_kasumi_ids,
             kasumi_runtime_enabled,
             mount_stats,
+            umount_guard,
             #[cfg(feature = "kasumi")]
             kasumi_guard,
         })
