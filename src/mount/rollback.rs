@@ -169,7 +169,7 @@ fn detach_mounts(targets: &[PathBuf]) -> Result<()> {
 fn detach_mount(target: &Path) -> Result<()> {
     match unmount(target, UnmountFlags::DETACH) {
         Ok(()) => Ok(()),
-        Err(error) if matches!(error, Errno::INVAL | Errno::NOENT) => Ok(()),
+        Err(Errno::INVAL | Errno::NOENT) => Ok(()),
         Err(error) => {
             Err(error).with_context(|| format!("failed to detach mount {}", target.display()))
         }
