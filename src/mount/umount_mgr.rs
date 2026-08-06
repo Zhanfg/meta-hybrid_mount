@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::{
     collections::HashSet,
     ffi::CString,
+    fs,
     os::{fd::RawFd, unix::ffi::OsStrExt},
     sync::{LazyLock, Mutex, OnceLock},
 };
@@ -217,21 +218,40 @@ fn register_target(target: &Path) -> Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn ksu_driver_fd() -> Result<RawFd> {
-    let fd = *KSU_DRIVER_FD.get_or_init(|| {
-        let mut fd = -1;
-        unsafe {
-            libc::syscall(
-                libc::SYS_reboot,
-                KSU_INSTALL_MAGIC1,
-                KSU_INSTALL_MAGIC2,
-                0,
-                &mut fd,
-            );
+fn scan_ksu_driver_fd() -> Option<RawFd> {
+    let entries = fs::read_dir("/proc/self/fd").ok()?;
+    for entry in entries.flatten() {
+        let fd = entry.file_name().to_string_lossy().parse::<RawFd>().ok()?;
+        let target = fs::read_link(entry.path()).ok()?;
+        if target.to_string_lossy().contains("[ksu_driver]") {
+            return Some(fd);
         }
-        fd
-    });
+    }
+    None
+}
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_ksu_driver_fd() -> RawFd {
+    if let Some(fd) = scan_ksu_driver_fd() {
+        return fd;
+    }
+
+    let mut fd = -1;
+    unsafe {
+        libc::syscall(
+            libc::SYS_reboot,
+            KSU_INSTALL_MAGIC1,
+            KSU_INSTALL_MAGIC2,
+            0,
+            &mut fd,
+        );
+    }
+    fd
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn ksu_driver_fd() -> Result<RawFd> {
+    let fd = *KSU_DRIVER_FD.get_or_init(open_ksu_driver_fd);
     if fd < 0 {
         bail!("KernelSU driver file descriptor is unavailable");
     }
