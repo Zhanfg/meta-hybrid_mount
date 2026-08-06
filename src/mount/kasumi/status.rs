@@ -49,7 +49,7 @@ fn runtime_probe() -> Result<RuntimeProbe> {
 
     let live_status = kasumi::check_status()?;
     let lkm_loaded = lkm::is_loaded()?;
-    let protocol_version = if lkm_loaded {
+    let protocol_version = if live_status == KasumiStatus::Available {
         Some(kasumi::get_protocol_version()?)
     } else {
         None

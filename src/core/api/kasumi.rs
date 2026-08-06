@@ -193,7 +193,7 @@ pub fn build_kasumi_version_payload(
     active_modules.sort();
     active_modules.dedup();
 
-    let mismatch = kernel_version != kasumi::KSM_PROTOCOL_VERSION;
+    let mismatch = status != KasumiStatus::Available;
 
     Ok(KasumiVersionPayload {
         protocol_version: kasumi::KSM_PROTOCOL_VERSION,
@@ -218,11 +218,6 @@ fn mismatch_message(status: KasumiStatus, kernel_version: i32) -> Option<String>
             "kernel protocol {} is newer than userspace api{}",
             kernel_version,
             kasumi::KSM_PROTOCOL_VERSION
-        )),
-        KasumiStatus::Available if kernel_version != kasumi::KSM_PROTOCOL_VERSION => Some(format!(
-            "protocol mismatch: userspace api{}, kernel api{}",
-            kasumi::KSM_PROTOCOL_VERSION,
-            kernel_version
         )),
         KasumiStatus::Available => None,
         KasumiStatus::NotPresent => None,

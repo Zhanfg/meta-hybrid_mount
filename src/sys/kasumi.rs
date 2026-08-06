@@ -531,12 +531,16 @@ fn write_path_into_c_buf(buf: &mut [c_char], path: &Path, field_name: &str) -> R
     write_bytes_into_c_buf(buf, path.as_os_str().as_bytes(), field_name)
 }
 
+fn module_name_from_proc_modules(content: &str) -> Option<&str> {
+    content.lines().find_map(|line| {
+        let name = line.split_whitespace().next()?;
+        matches!(name, "kasumi_lkm" | "kasumi").then_some(name)
+    })
+}
+
 fn module_loaded() -> Result<bool> {
     let content = fs::read_to_string("/proc/modules").context("failed to read /proc/modules")?;
-
-    Ok(content
-        .lines()
-        .any(|line| line.starts_with("kasumi_lkm ") || line.starts_with("kasumi_lkm\t")))
+    Ok(module_name_from_proc_modules(&content).is_some())
 }
 
 /// Returns `true` when the running kernel version matches one of the supported
@@ -587,14 +591,10 @@ fn fetch_anon_fd() -> Result<c_int> {
 
     crate::scoped_log!(debug, "kasumi:fd", "start: source=kernel_query");
 
-    // Bail immediately when Kasumi LKM isn't loaded — avoids a ~4.6 s
-    // retry loop that can never succeed on unsupported kernels.
-    // Use module_loaded() instead of check_status() to avoid recursion:
-    // check_status() → get_protocol_version() → ioctl_call() → fetch_anon_fd() → check_status()
-    if !module_loaded()? {
-        bail!("Kasumi LKM is not loaded");
-    }
-
+    // Probe once before trusting /proc/modules. Protocol-16 kernels may expose
+    // Kasumi under the legacy `kasumi` name, and integrated implementations
+    // may not have a loadable-module entry at all. The module list is used
+    // only to decide whether delayed retries are useful.
     let mut fd = -1;
     const WAIT_ATTEMPTS: usize = 4;
     const SHORT_RETRIES: usize = 2;
@@ -651,6 +651,15 @@ fn fetch_anon_fd() -> Result<c_int> {
         }
 
         if fd >= 0 {
+            break;
+        }
+
+        if wait_round == 0 && !module_loaded()? {
+            crate::scoped_log!(
+                debug,
+                "kasumi:fd",
+                "stop retries: immediate probe failed and no Kasumi module is listed"
+            );
             break;
         }
     }
@@ -821,10 +830,19 @@ pub fn check_status() -> Result<KasumiStatus> {
             "kernel version not in supported list — forcing KernelNotSupported"
         );
         KasumiStatus::KernelNotSupported
-    } else if !module_loaded()? {
-        KasumiStatus::NotPresent
     } else {
-        classify_protocol_version(get_protocol_version()?)
+        match get_protocol_version() {
+            Ok(version) => classify_protocol_version(version),
+            Err(error) => {
+                crate::scoped_log!(
+                    debug,
+                    "kasumi:status",
+                    "protocol probe unavailable: error={:#}",
+                    error
+                );
+                KasumiStatus::NotPresent
+            }
+        }
     };
 
     let mut cache = STATUS_CACHE.lock().map_err(|_| lock_error("status"))?;
@@ -1185,6 +1203,31 @@ mod protocol_compat_tests {
         assert_eq!(
             classify_protocol_version(KSM_PROTOCOL_VERSION + 1),
             KasumiStatus::ModuleTooOld
+        );
+    }
+
+    #[test]
+    fn recognizes_current_and_legacy_module_names() {
+        assert_eq!(
+            module_name_from_proc_modules(
+                "kasumi_lkm 123 0 - Live 0x0
+"
+            ),
+            Some("kasumi_lkm")
+        );
+        assert_eq!(
+            module_name_from_proc_modules(
+                "kasumi 123 0 - Live 0x0
+"
+            ),
+            Some("kasumi")
+        );
+        assert_eq!(
+            module_name_from_proc_modules(
+                "other 1 0 - Live 0x0
+"
+            ),
+            None
         );
     }
 }

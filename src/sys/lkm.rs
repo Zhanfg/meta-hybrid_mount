@@ -151,12 +151,20 @@ fn resolve_module_file(config: &KasumiConfig) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn loaded_module_name_from_proc_modules(content: &str) -> Option<&str> {
+    content.lines().find_map(|line| {
+        let name = line.split_whitespace().next()?;
+        matches!(name, "kasumi_lkm" | "kasumi").then_some(name)
+    })
+}
+
 fn loaded_module_name() -> Result<Option<String>> {
     let content = fs::read_to_string("/proc/modules").context("failed to read /proc/modules")?;
-    Ok(content.lines().find_map(|line| {
-        let name = line.split_whitespace().next()?;
-        (name == defs::KASUMI_LKM_MODULE_NAME).then(|| name.to_string())
-    }))
+    Ok(loaded_module_name_from_proc_modules(&content).map(ToString::to_string))
+}
+
+fn managed_module_name() -> Result<Option<String>> {
+    Ok(loaded_module_name()?.filter(|name| name == defs::KASUMI_LKM_MODULE_NAME))
 }
 
 pub fn is_loaded() -> Result<bool> {
@@ -215,6 +223,14 @@ fn unload_module_via_syscall(_module_name: &str) -> Result<()> {
 }
 
 pub fn load(config: &KasumiConfig) -> Result<()> {
+    if kasumi::can_operate()? {
+        crate::scoped_log!(
+            info,
+            "lkm",
+            "load skipped: an operable Kasumi runtime is already present"
+        );
+        return Ok(());
+    }
     if is_loaded()? {
         kasumi::invalidate_status_cache()?;
         return Ok(());
@@ -237,7 +253,12 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
 }
 
 pub fn unload(_config: &KasumiConfig) -> Result<()> {
-    let Some(module_name) = loaded_module_name()? else {
+    let Some(module_name) = managed_module_name()? else {
+        if kasumi::can_operate()? {
+            bail!(
+                "active Kasumi runtime is kernel-integrated or externally managed; refusing to unload it"
+            );
+        }
         kasumi::release_connection()?;
         return Ok(());
     };
@@ -276,6 +297,7 @@ pub fn unload(_config: &KasumiConfig) -> Result<()> {
 pub fn autoload_if_needed(config: &KasumiConfig) -> Result<bool> {
     if !config.enabled
         || !config.lkm_autoload
+        || kasumi::can_operate()?
         || is_loaded()?
         || kasumi::check_status()? == kasumi::KasumiStatus::KernelNotSupported
     {
@@ -288,7 +310,7 @@ pub fn autoload_if_needed(config: &KasumiConfig) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_kmi_from_release;
+    use super::{loaded_module_name_from_proc_modules, parse_kmi_from_release};
 
     #[test]
     fn parses_gki_release() {
@@ -303,5 +325,30 @@ mod tests {
         let error = parse_kmi_from_release("5.15.207-g3ddad1147e36").unwrap_err();
 
         assert!(error.to_string().contains("has no Android version"));
+    }
+
+    #[test]
+    fn detects_legacy_and_current_kasumi_modules() {
+        assert_eq!(
+            loaded_module_name_from_proc_modules(
+                "kasumi_lkm 1 0 - Live 0x0
+"
+            ),
+            Some("kasumi_lkm")
+        );
+        assert_eq!(
+            loaded_module_name_from_proc_modules(
+                "kasumi 1 0 - Live 0x0
+"
+            ),
+            Some("kasumi")
+        );
+        assert_eq!(
+            loaded_module_name_from_proc_modules(
+                "other 1 0 - Live 0x0
+"
+            ),
+            None
+        );
     }
 }
