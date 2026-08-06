@@ -32,14 +32,9 @@ pub fn finalize(
         result.kasumi_count()
     );
 
-    let state = RuntimeState::build_from_execution(
-        config,
-        storage_mode,
-        mount_point,
-        result,
-        inventory,
-    )
-    .context("failed to collect runtime state for completed mount transaction")?;
+    let state =
+        RuntimeState::build_from_execution(config, storage_mode, mount_point, result, inventory)
+            .context("failed to collect runtime state for completed mount transaction")?;
 
     state
         .save()

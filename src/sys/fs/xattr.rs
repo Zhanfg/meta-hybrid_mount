@@ -101,7 +101,18 @@ pub fn is_overlay_xattr_supported() -> Result<bool> {
         return Ok(true);
     }
 
-    let supported = super::check_kernel_config("CONFIG_TMPFS_XATTR")?;
+    let supported = match super::check_kernel_config("CONFIG_TMPFS_XATTR") {
+        Ok(supported) => supported,
+        Err(error) => {
+            crate::scoped_log!(
+                warn,
+                "xattr",
+                "kernel config probe unavailable; reporting tmpfs xattr as unsupported: error={:#}",
+                error
+            );
+            false
+        }
+    };
 
     TMPFS_XATTR_SUPPORTED.store(supported, std::sync::atomic::Ordering::Relaxed);
 
