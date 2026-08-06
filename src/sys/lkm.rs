@@ -6,6 +6,7 @@
 use std::{ffi::CString, os::fd::AsRawFd};
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     thread,
@@ -13,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     conf::schema::KasumiConfig,
@@ -37,8 +38,9 @@ pub struct LkmStatus {
     pub module_file: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ManagedLkmSession {
+    boot_id: String,
     module_name: String,
     module_file: PathBuf,
 }
@@ -75,11 +77,32 @@ fn managed_session() -> &'static Mutex<Option<ManagedLkmSession>> {
     MANAGED_LKM_SESSION.get_or_init(|| Mutex::new(None))
 }
 
+fn remove_managed_receipt() -> Result<()> {
+    match fs::remove_file(defs::KASUMI_LKM_OWNER_FILE) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to remove Kasumi LKM ownership receipt {}",
+                defs::KASUMI_LKM_OWNER_FILE
+            )
+        }),
+    }
+}
+
 fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
-    *managed_session()
+    let mut guard = managed_session()
         .lock()
-        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? =
-        Some(session);
+        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?;
+    let payload = serde_json::to_vec_pretty(&session)
+        .context("failed to serialize Kasumi LKM ownership receipt")?;
+    crate::sys::fs::atomic_write(defs::KASUMI_LKM_OWNER_FILE, payload).with_context(|| {
+        format!(
+            "failed to persist Kasumi LKM ownership receipt {}",
+            defs::KASUMI_LKM_OWNER_FILE
+        )
+    })?;
+    *guard = Some(session);
     Ok(())
 }
 
@@ -87,16 +110,21 @@ fn clear_managed_session() -> Result<()> {
     *managed_session()
         .lock()
         .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? = None;
-    Ok(())
+    remove_managed_receipt()
 }
 
 fn session_manages_loaded_module(
     session: Option<&ManagedLkmSession>,
     loaded_module_name: Option<&str>,
+    boot_id: &str,
 ) -> bool {
     matches!(
         (session, loaded_module_name),
-        (Some(session), Some(loaded)) if session.module_name == loaded
+        (Some(session), Some(loaded))
+            if session.boot_id == boot_id
+                && session.module_name == defs::KASUMI_LKM_MODULE_NAME
+                && session.module_name == loaded
+                && session.module_file.is_absolute()
     )
 }
 
@@ -110,6 +138,98 @@ fn read_first_line(path: &Path) -> Result<String> {
         .filter(|line| !line.is_empty())
         .with_context(|| format!("{} does not contain a value", path.display()))?;
     Ok(line.to_string())
+}
+
+fn current_boot_id() -> Result<String> {
+    read_first_line(Path::new("/proc/sys/kernel/random/boot_id"))
+}
+
+fn load_managed_session() -> Result<Option<ManagedLkmSession>> {
+    let boot_id = current_boot_id().context("failed to read current boot id")?;
+
+    if let Some(session) = managed_session()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?
+        .clone()
+    {
+        if session.boot_id == boot_id {
+            return Ok(Some(session));
+        }
+        clear_managed_session()?;
+    }
+
+    let content = match fs::read_to_string(defs::KASUMI_LKM_OWNER_FILE) {
+        Ok(content) => content,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            crate::scoped_log!(
+                warn,
+                "lkm",
+                "ownership receipt unreadable; treating module as unmanaged: path={}, error={}",
+                defs::KASUMI_LKM_OWNER_FILE,
+                error
+            );
+            return Ok(None);
+        }
+    };
+
+    let session: ManagedLkmSession = match serde_json::from_str(&content) {
+        Ok(session) => session,
+        Err(error) => {
+            crate::scoped_log!(
+                warn,
+                "lkm",
+                "ownership receipt invalid; removing it: path={}, error={}",
+                defs::KASUMI_LKM_OWNER_FILE,
+                error
+            );
+            remove_managed_receipt()?;
+            return Ok(None);
+        }
+    };
+
+    if session.boot_id != boot_id
+        || session.module_name != defs::KASUMI_LKM_MODULE_NAME
+        || !session.module_file.is_absolute()
+    {
+        crate::scoped_log!(
+            debug,
+            "lkm",
+            "discard stale ownership receipt: path={}, receipt_boot={}, current_boot={}, module={}",
+            defs::KASUMI_LKM_OWNER_FILE,
+            session.boot_id,
+            boot_id,
+            session.module_name
+        );
+        remove_managed_receipt()?;
+        return Ok(None);
+    }
+
+    *managed_session()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? =
+        Some(session.clone());
+    Ok(Some(session))
+}
+
+fn managed_session_for_loaded_module(
+    loaded_module_name: Option<&str>,
+) -> Result<Option<ManagedLkmSession>> {
+    let boot_id = current_boot_id().context("failed to read current boot id")?;
+    let session = load_managed_session()?;
+    if session_manages_loaded_module(session.as_ref(), loaded_module_name, &boot_id) {
+        return Ok(session);
+    }
+
+    if session.is_some() {
+        crate::scoped_log!(
+            warn,
+            "lkm",
+            "ownership receipt no longer matches the loaded module; revoking management"
+        );
+        clear_managed_session()?;
+    }
+    Ok(None)
 }
 
 fn arch_suffix() -> &'static str {
@@ -212,10 +332,7 @@ fn loaded_module_name() -> Result<Option<String>> {
 
 fn managed_module_name() -> Result<Option<String>> {
     let loaded = loaded_module_name()?;
-    let session = managed_session()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?;
-    if session_manages_loaded_module(session.as_ref(), loaded.as_deref()) {
+    if managed_session_for_loaded_module(loaded.as_deref())?.is_some() {
         Ok(loaded)
     } else {
         Ok(None)
@@ -228,16 +345,11 @@ pub fn is_loaded() -> Result<bool> {
 
 pub fn status(config: &KasumiConfig) -> Result<LkmStatus> {
     let module_name = loaded_module_name()?;
-    let session = managed_session()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))?;
-    let managed = session_manages_loaded_module(session.as_ref(), module_name.as_deref());
+    let session = managed_session_for_loaded_module(module_name.as_deref())?;
+    let managed = session.is_some();
     let current_kmi = current_kmi().unwrap_or_else(|error| format!("unavailable: {error:#}"));
-    let module_file = if managed {
-        session
-            .as_ref()
-            .map(|session| session.module_file.clone())
-            .unwrap_or_default()
+    let module_file = if let Some(session) = session {
+        session.module_file
     } else {
         resolve_module_file(config).unwrap_or_default()
     };
@@ -421,6 +533,7 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
     }
 
     let session = ManagedLkmSession {
+        boot_id: current_boot_id().context("failed to bind LKM ownership to current boot")?,
         module_name: module_name.clone(),
         module_file: ko_path.clone(),
     };
@@ -442,7 +555,7 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
     crate::scoped_log!(
         info,
         "lkm",
-        "load complete: module={}, file={}, kmi={}, ownership=current_daemon_session",
+        "load complete: module={}, file={}, kmi={}, ownership=current_boot_receipt",
         module_name,
         ko_path.display(),
         kmi
@@ -454,7 +567,7 @@ pub fn unload(_config: &KasumiConfig) -> Result<()> {
     let Some(module_name) = managed_module_name()? else {
         if kasumi::can_operate()? || is_loaded()? {
             bail!(
-                "active Kasumi runtime was not loaded by this daemon session; refusing to unload it"
+                "active Kasumi runtime has no valid current-boot ownership receipt; refusing to unload it"
             );
         }
         kasumi::release_connection()?;
@@ -470,8 +583,9 @@ pub fn unload(_config: &KasumiConfig) -> Result<()> {
     for _ in 0..5 {
         match unload_module_via_syscall(&module_name) {
             Ok(()) => {
-                clear_managed_session()?;
+                let clear_result = clear_managed_session();
                 kasumi::invalidate_status_cache()?;
+                clear_result?;
                 crate::scoped_log!(info, "lkm", "unload complete: module={}", module_name);
                 return Ok(());
             }
@@ -558,24 +672,50 @@ mod tests {
 
     #[test]
     fn module_name_alone_never_grants_unload_ownership() {
-        assert!(!session_manages_loaded_module(None, Some("kasumi_lkm")));
+        assert!(!session_manages_loaded_module(
+            None,
+            Some("kasumi_lkm"),
+            "boot-a"
+        ));
     }
 
     #[test]
-    fn ownership_requires_the_current_session_and_matching_module() {
+    fn ownership_requires_current_boot_canonical_module_and_absolute_file() {
         let session = ManagedLkmSession {
+            boot_id: "boot-a".to_string(),
             module_name: "kasumi_lkm".to_string(),
             module_file: PathBuf::from("/tmp/kasumi_lkm.ko"),
         };
 
         assert!(session_manages_loaded_module(
             Some(&session),
-            Some("kasumi_lkm")
+            Some("kasumi_lkm"),
+            "boot-a"
         ));
         assert!(!session_manages_loaded_module(
             Some(&session),
-            Some("kasumi")
+            Some("kasumi"),
+            "boot-a"
         ));
-        assert!(!session_manages_loaded_module(Some(&session), None));
+        assert!(!session_manages_loaded_module(
+            Some(&session),
+            Some("kasumi_lkm"),
+            "boot-b"
+        ));
+        assert!(!session_manages_loaded_module(
+            Some(&session),
+            None,
+            "boot-a"
+        ));
+
+        let relative = ManagedLkmSession {
+            module_file: PathBuf::from("kasumi_lkm.ko"),
+            ..session
+        };
+        assert!(!session_manages_loaded_module(
+            Some(&relative),
+            Some("kasumi_lkm"),
+            "boot-a"
+        ));
     }
 }
