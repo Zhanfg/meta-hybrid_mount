@@ -24,6 +24,8 @@ An unsupported Kasumi protocol must not prevent unrelated modules from mounting.
 
 The maintained fork keeps the canonical `hybrid_mount` module ID so an existing installation and its configuration can be upgraded in place. Fork artifacts use a distinct display name and a fork-specific monotonic `versionCode` namespace. Development packages omit `updateJson`; they must not silently return to the upstream release channel or replace the fork with an unrelated upstream artifact.
 
+The repository-level Full/Lite/Nano update manifests are also marked disabled until a reviewed fork release and stable artifact URL exist.
+
 ## Validation requirements
 
 Any later Kasumi UAPI update must verify:
