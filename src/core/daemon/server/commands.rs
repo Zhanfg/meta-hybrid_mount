@@ -152,13 +152,21 @@ fn cached_status_and_snapshot(state: &Arc<Mutex<RuntimeState>>) -> Result<(Value
 // ── Top-level dispatch ──────────────────────────────────────────────────
 
 pub(super) fn dispatch_command(ctx: &CommandContext<'_>, command: DaemonCommand) -> Result<Value> {
-    // Every command shares one exclusive boundary. Read requests are short,
-    // while runtime writes can touch config, Kasumi rules, uname state, hide
-    // policy, cached connections and the LKM lifecycle. Serializing the full
-    // command prevents a read from observing a half-applied update and avoids
-    // unload/rule/config races across concurrent HTTP or Unix clients.
+    // The lock covers both the authoritative config reload and command
+    // execution. This prevents a request from waiting behind a config update
+    // and then executing with the stale snapshot it loaded before the lock.
     let _command_guard = ctx.config_access.lock_writes()?;
-    dispatch_command_unlocked(ctx, command)
+    let effective_config = load_runtime_config_uncached(ctx.config_path)?;
+    let effective_ctx = CommandContext::new(
+        &effective_config,
+        ctx.config_path,
+        ctx.config_access,
+        ctx.state,
+        ctx.shutdown,
+        ctx.webui,
+        ctx.sse_clients,
+    );
+    dispatch_command_unlocked(&effective_ctx, command)
 }
 
 fn dispatch_command_unlocked(ctx: &CommandContext<'_>, command: DaemonCommand) -> Result<Value> {
