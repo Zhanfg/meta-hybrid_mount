@@ -56,7 +56,8 @@ pub fn apply_runtime_config(config: &Config) -> Result<bool> {
         return Ok(true);
     }
 
-    let lkm_was_loaded = lkm::is_loaded().context("Failed to inspect Kasumi LKM before update")?;
+    let lkm_was_loaded =
+        lkm::is_loaded().context("Failed to inspect Kasumi LKM before update")?;
     match runtime::apply_runtime_config(config) {
         Ok(applied) => Ok(applied),
         Err(error) => rollback_failed_runtime_update(config, lkm_was_loaded, error),
