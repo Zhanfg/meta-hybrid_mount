@@ -12,8 +12,8 @@ use std::{
 };
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-use anyhow::{Context, bail};
-use anyhow::Result;
+use anyhow::Context;
+use anyhow::{Result, bail};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use ksu::{TryUmount, TryUmountFlags};
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -245,7 +245,7 @@ fn delete_registration(target: &Path) -> Result<()> {
     let cmd = AddTryUmountCmd::delete(path.as_ptr() as u64);
     let ret = unsafe {
         libc::ioctl(
-            ksu_driver_fd()? as libc::c_int,
+            ksu_driver_fd()?,
             KSU_IOCTL_ADD_TRY_UMOUNT,
             &cmd,
         )
