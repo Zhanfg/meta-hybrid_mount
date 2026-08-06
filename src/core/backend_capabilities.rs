@@ -19,21 +19,40 @@ impl BackendCapabilities {
         #[cfg(not(feature = "kasumi"))]
         {
             let _ = config;
-            Ok(Self {
-                kasumi_status: "disabled".to_string(),
-                kasumi_usable: false,
-            })
+            Ok(Self::kasumi_disabled())
         }
 
         #[cfg(feature = "kasumi")]
         {
-            let status = kasumi::check_status()?;
+            if !config.kasumi.enabled {
+                return Ok(Self::kasumi_disabled());
+            }
 
-            Ok(Self {
-                kasumi_status: kasumi::status_name(status).to_string(),
-                kasumi_usable: config.kasumi.enabled
-                    && matches!(status, kasumi::KasumiStatus::Available),
-            })
+            match kasumi::check_status() {
+                Ok(status) => Ok(Self {
+                    kasumi_status: kasumi::status_name(status).to_string(),
+                    kasumi_usable: matches!(status, kasumi::KasumiStatus::Available),
+                }),
+                Err(error) => {
+                    crate::scoped_log!(
+                        warn,
+                        "backend_capabilities",
+                        "kasumi probe failed; backend marked unavailable: error={:#}",
+                        error
+                    );
+                    Ok(Self {
+                        kasumi_status: "probe_error".to_string(),
+                        kasumi_usable: false,
+                    })
+                }
+            }
+        }
+    }
+
+    fn kasumi_disabled() -> Self {
+        Self {
+            kasumi_status: "disabled".to_string(),
+            kasumi_usable: false,
         }
     }
 
@@ -43,5 +62,20 @@ impl BackendCapabilities {
 
     pub fn kasumi_status(&self) -> &str {
         &self.kasumi_status
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_kasumi_does_not_require_a_kernel_probe() {
+        let mut config = Config::default();
+        config.kasumi.enabled = false;
+
+        let capabilities = BackendCapabilities::detect(&config).unwrap();
+        assert!(!capabilities.can_use_kasumi());
+        assert_eq!(capabilities.kasumi_status(), "disabled");
     }
 }
