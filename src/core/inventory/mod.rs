@@ -11,7 +11,7 @@ use std::fs;
 use anyhow::Result;
 #[cfg(not(feature = "control-plane"))]
 use anyhow::bail;
-pub use discovery::{InventorySnapshot, InventorySummary, Module};
+pub use discovery::{InventorySnapshot, InventorySummary, Module, validate_module_prop_id};
 
 #[cfg(not(feature = "control-plane"))]
 use crate::domain::MountMode;
