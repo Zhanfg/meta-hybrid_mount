@@ -295,6 +295,7 @@ impl MagicMount {
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         if self.umount
+            && !self.work_dir_path.starts_with("/mnt")
             && let Err(error) = send_umountable(target)
         {
             crate::scoped_log!(
