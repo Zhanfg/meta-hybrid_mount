@@ -28,6 +28,90 @@ rehybird_remove_path() {
   fi
 }
 
+rehybird_stat_value() {
+  stat_format="$1"
+  stat_path="$2"
+  if command -v busybox >/dev/null 2>&1; then
+    busybox stat -c "$stat_format" "$stat_path"
+  else
+    stat -c "$stat_format" "$stat_path"
+  fi
+}
+
+rehybird_prepare_private_root() {
+  private_root="$1"
+
+  if [ -L "$private_root" ]; then
+    return 30
+  fi
+  if [ -e "$private_root" ] && [ ! -d "$private_root" ]; then
+    return 31
+  fi
+  if [ ! -d "$private_root" ]; then
+    mkdir -m 0700 "$private_root" || return 32
+  fi
+  [ -d "$private_root" ] && [ ! -L "$private_root" ] || return 33
+
+  owner="$(rehybird_stat_value %u "$private_root")" || return 34
+  [ "$owner" = 0 ] || return 35
+  chown 0:0 "$private_root" || return 36
+  chmod 0700 "$private_root" || return 37
+  [ "$(rehybird_stat_value %u "$private_root")" = 0 ] || return 38
+  [ "$(rehybird_stat_value %a "$private_root")" = 700 ] || return 39
+}
+
+rehybird_secure_existing_private_file() {
+  private_file="$1"
+
+  [ -f "$private_file" ] && [ ! -L "$private_file" ] || return 40
+  [ "$(rehybird_stat_value %u "$private_file")" = 0 ] || return 41
+  [ "$(rehybird_stat_value %h "$private_file")" = 1 ] || return 42
+
+  chown 0:0 "$private_file" || return 43
+  chmod 0600 "$private_file" || return 44
+  [ -f "$private_file" ] && [ ! -L "$private_file" ] || return 45
+  [ "$(rehybird_stat_value %u "$private_file")" = 0 ] || return 46
+  [ "$(rehybird_stat_value %h "$private_file")" = 1 ] || return 47
+  [ "$(rehybird_stat_value %a "$private_file")" = 600 ] || return 48
+}
+
+rehybird_install_private_file() {
+  source_file="$1"
+  target_file="$2"
+  target_parent="${target_file%/*}"
+  target_name="${target_file##*/}"
+  temp_file="$target_parent/.${target_name}.rehybird-new.$$"
+
+  [ -f "$source_file" ] && [ ! -L "$source_file" ] || return 50
+  [ -d "$target_parent" ] && [ ! -L "$target_parent" ] || return 51
+  [ "$(rehybird_stat_value %u "$target_parent")" = 0 ] || return 52
+  if [ -e "$target_file" ] || [ -L "$target_file" ]; then
+    return 53
+  fi
+  if [ -e "$temp_file" ] || [ -L "$temp_file" ]; then
+    return 54
+  fi
+
+  umask 077
+  if ! cat "$source_file" >"$temp_file"; then
+    rm -f "$temp_file"
+    return 55
+  fi
+  if ! chown 0:0 "$temp_file" || ! chmod 0600 "$temp_file"; then
+    rm -f "$temp_file"
+    return 56
+  fi
+  if ! rehybird_secure_existing_private_file "$temp_file"; then
+    rm -f "$temp_file"
+    return 57
+  fi
+  if ! rehybird_move_path "$temp_file" "$target_file"; then
+    rm -f "$temp_file"
+    return 58
+  fi
+  rehybird_secure_existing_private_file "$target_file" || return 59
+}
+
 # Move an installed module aside, then atomically promote its staged update.
 # The backup remains until the caller has created KernelSU's update stub and
 # explicitly commits the transaction.
