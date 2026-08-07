@@ -13,6 +13,88 @@ use rustix::mount::{MountFlags, UnmountFlags, mount_bind, mount_remount, unmount
 
 use crate::conf::schema::CustomBindMount;
 
+const CRITICAL_BIND_TREES: &[&str] = &[
+    "/system/etc/firmware",
+    "/vendor/firmware",
+    "/vendor/firmware_mnt",
+    "/vendor/bt_firmware",
+    "/vendor/etc/firmware",
+    "/vendor/rfs",
+    "/vendor/etc/bluetooth",
+    "/vendor/etc/qcril_database",
+    "/vendor/etc/radio",
+    "/vendor/etc/modem",
+    "/vendor/etc/init",
+    "/vendor/etc/vintf",
+    "/vendor/etc/selinux",
+    "/odm/firmware",
+    "/odm/bt_firmware",
+    "/odm/etc/firmware",
+    "/odm/etc/bluetooth",
+    "/odm/etc/radio",
+    "/odm/etc/modem",
+    "/odm/etc/init",
+    "/odm/etc/vintf",
+    "/odm/etc/selinux",
+    "/my_carrier/firmware",
+    "/my_carrier/bt_firmware",
+    "/my_carrier/etc/firmware",
+    "/my_carrier/etc/radio",
+    "/my_carrier/etc/modem",
+    "/my_carrier/etc/init",
+    "/my_carrier/etc/vintf",
+];
+
+const SENSITIVE_BIND_AREAS: &[&str] = &[
+    "/vendor/bin",
+    "/vendor/lib",
+    "/vendor/lib64",
+    "/vendor/etc/permissions",
+    "/vendor/etc/sysconfig",
+    "/odm/bin",
+    "/odm/lib",
+    "/odm/lib64",
+    "/odm/etc/permissions",
+    "/odm/etc/sysconfig",
+    "/my_carrier/bin",
+    "/my_carrier/lib",
+    "/my_carrier/lib64",
+    "/my_carrier/etc/permissions",
+    "/my_carrier/etc/sysconfig",
+];
+
+const SENSITIVE_BIND_IDENTIFIERS: &[&str] = &[
+    "bluetooth",
+    "android.hardware.radio",
+    "vendor.qti.hardware.radio",
+    "vendor.oplus.hardware.radio",
+    "telephony",
+    "qcril",
+    "libril",
+    "/rild",
+    "modem",
+    "libbt",
+    "bt_vendor",
+    "bt_firmware",
+    "wcnss",
+    "mpss",
+];
+
+const CRITICAL_BIND_EXACT_FILES: &[&str] = &[
+    "/vendor/ueventd.rc",
+    "/vendor/build.prop",
+    "/vendor/default.prop",
+    "/odm/ueventd.rc",
+    "/odm/build.prop",
+    "/my_carrier/build.prop",
+];
+
+const CRITICAL_BIND_FILE_PREFIXES: &[&str] = &[
+    "/vendor/etc/fstab.",
+    "/odm/etc/fstab.",
+    "/my_carrier/etc/fstab.",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CustomBindKind {
     File,
@@ -77,17 +159,81 @@ fn apply_one(mount: &CustomBindMount, disable_umount: bool) -> Result<AppliedCus
     })
 }
 
+fn normalize_managed_alias_text(target: &Path) -> String {
+    let text = target.to_string_lossy().to_ascii_lowercase();
+    for (alias, canonical) in [
+        ("/system/vendor", "/vendor"),
+        ("/system/odm", "/odm"),
+        ("/system/product", "/product"),
+        ("/system/system_ext", "/system_ext"),
+    ] {
+        if text == alias {
+            return canonical.to_string();
+        }
+        if let Some(rest) = text.strip_prefix(alias)
+            && rest.starts_with('/')
+        {
+            return format!("{canonical}{rest}");
+        }
+    }
+    text
+}
+
+fn target_is_critical_system_path(target: &Path) -> bool {
+    let text = normalize_managed_alias_text(target);
+
+    if ["/system", "/vendor", "/odm", "/product", "/system_ext", "/my_carrier"]
+        .contains(&text.as_str())
+    {
+        return true;
+    }
+
+    if CRITICAL_BIND_TREES
+        .iter()
+        .any(|root| text == *root || text.starts_with(&format!("{root}/")))
+    {
+        return true;
+    }
+
+    if CRITICAL_BIND_EXACT_FILES
+        .iter()
+        .any(|critical| text == *critical)
+        || CRITICAL_BIND_FILE_PREFIXES
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+    {
+        return true;
+    }
+
+    let in_sensitive_area = SENSITIVE_BIND_AREAS
+        .iter()
+        .any(|root| text == *root || text.starts_with(&format!("{root}/")));
+    in_sensitive_area
+        && SENSITIVE_BIND_IDENTIFIERS
+            .iter()
+            .any(|identifier| text.contains(identifier))
+}
+
 fn target_is_forbidden(target: &Path) -> bool {
     target == Path::new("/")
-        || ["/proc", "/sys", "/dev", "/mnt", "/storage", "/data/adb"]
-            .into_iter()
-            .any(|root| target.starts_with(root))
+        || [
+            "/proc",
+            "/sys",
+            "/dev",
+            "/mnt",
+            "/storage",
+            "/data/adb",
+            "/apex",
+        ]
+        .into_iter()
+        .any(|root| target.starts_with(root))
+        || target_is_critical_system_path(target)
 }
 
 fn ensure_target_allowed(target: &Path) -> Result<()> {
     if target_is_forbidden(target) {
         bail!(
-            "custom bind target is inside a protected runtime root: {}",
+            "custom bind target is inside a protected runtime or radio-critical path: {}",
             target.display()
         );
     }
@@ -115,6 +261,15 @@ fn validate_mount_paths(source: &Path, target: &Path) -> Result<CustomBindKind> 
     let target_real = fs::canonicalize(target)
         .with_context(|| format!("failed to resolve target {}", target.display()))?;
     ensure_target_allowed(&target_real)?;
+
+    let source_type = source_meta.file_type();
+    let target_type = target_meta.file_type();
+    if !(source_type.is_dir() || source_type.is_file()) {
+        bail!("custom bind source must be a regular file or directory");
+    }
+    if !(target_type.is_dir() || target_type.is_file()) {
+        bail!("custom bind target must be a regular file or directory");
+    }
 
     match (source_meta.is_dir(), target_meta.is_dir()) {
         (true, true) => {
@@ -221,17 +376,35 @@ mod tests {
 
     #[test]
     fn validate_rejects_protected_targets_before_filesystem_access() {
-        assert!(validate_mount_paths(Path::new("/missing-source"), Path::new("/")).is_err());
-        assert!(
-            validate_mount_paths(
-                Path::new("/missing-source"),
-                Path::new("/data/adb/modules/hybrid_mount")
-            )
-            .is_err()
-        );
-        assert!(
-            validate_mount_paths(Path::new("/missing-source"), Path::new("/proc/sys")).is_err()
-        );
+        for target in [
+            "/",
+            "/data/adb/modules/hybrid_mount",
+            "/proc/sys",
+            "/apex/com.android.runtime",
+            "/vendor/firmware/modem.mbn",
+            "/system/vendor/etc/bluetooth/bt_vendor.conf",
+            "/vendor/lib64/libbt-vendor.so",
+            "/vendor/etc/init/hw/init.qcom.rc",
+            "/odm/etc/vintf/manifest.xml",
+        ] {
+            assert!(
+                validate_mount_paths(Path::new("/missing-source"), Path::new(target)).is_err(),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn radio_critical_filter_leaves_audio_payload_targets_available() {
+        assert!(!target_is_critical_system_path(Path::new(
+            "/vendor/lib64/soundfx/libdolby.so"
+        )));
+        assert!(!target_is_critical_system_path(Path::new(
+            "/vendor/etc/audio_effects.xml"
+        )));
+        assert!(target_is_critical_system_path(Path::new(
+            "/vendor/lib64/libbt-vendor.so"
+        )));
     }
 
     #[cfg(unix)]
@@ -246,6 +419,16 @@ mod tests {
         symlink("/proc", &target).unwrap();
 
         assert!(validate_mount_paths(&source, &target).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_rejects_special_file_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::write(&target, b"").unwrap();
+
+        assert!(validate_mount_paths(Path::new("/dev/null"), &target).is_err());
     }
 
     #[test]
