@@ -45,12 +45,19 @@ fn ensure_root_owned_nonwritable(path: &Path, metadata: &fs::Metadata) -> Result
 
 fn ensure_real_path_component(path: &Path, metadata: &fs::Metadata) -> Result<()> {
     if metadata.file_type().is_symlink() {
-        bail!("Kasumi runtime path contains a symlink component: {}", path.display());
+        bail!(
+            "Kasumi runtime path contains a symlink component: {}",
+            path.display()
+        );
     }
     ensure_root_owned_nonwritable(path, metadata)
 }
 
-fn ensure_trusted_existing_chain(anchor: &Path, path: &Path, leaf: Option<RequiredLeaf>) -> Result<()> {
+fn ensure_trusted_existing_chain(
+    anchor: &Path,
+    path: &Path,
+    leaf: Option<RequiredLeaf>,
+) -> Result<()> {
     if !path.starts_with(anchor) {
         bail!(
             "Kasumi runtime path escaped trusted anchor: path={}, anchor={}",
@@ -59,14 +66,25 @@ fn ensure_trusted_existing_chain(anchor: &Path, path: &Path, leaf: Option<Requir
         );
     }
 
-    let anchor_metadata = fs::symlink_metadata(anchor)
-        .with_context(|| format!("failed to inspect trusted Kasumi anchor {}", anchor.display()))?;
+    let anchor_metadata = fs::symlink_metadata(anchor).with_context(|| {
+        format!(
+            "failed to inspect trusted Kasumi anchor {}",
+            anchor.display()
+        )
+    })?;
     if !anchor_metadata.file_type().is_dir() {
-        bail!("trusted Kasumi anchor is not a directory: {}", anchor.display());
+        bail!(
+            "trusted Kasumi anchor is not a directory: {}",
+            anchor.display()
+        );
     }
     ensure_real_path_component(anchor, &anchor_metadata)?;
-    let canonical_anchor = fs::canonicalize(anchor)
-        .with_context(|| format!("failed to resolve trusted Kasumi anchor {}", anchor.display()))?;
+    let canonical_anchor = fs::canonicalize(anchor).with_context(|| {
+        format!(
+            "failed to resolve trusted Kasumi anchor {}",
+            anchor.display()
+        )
+    })?;
     if canonical_anchor != anchor {
         bail!(
             "trusted Kasumi anchor resolves elsewhere: {} -> {}",
@@ -79,11 +97,15 @@ fn ensure_trusted_existing_chain(anchor: &Path, path: &Path, leaf: Option<Requir
     let mut cursor = anchor.to_path_buf();
     for component in relative.components() {
         let Component::Normal(name) = component else {
-            bail!("Kasumi runtime path contains an invalid component: {}", path.display());
+            bail!(
+                "Kasumi runtime path contains an invalid component: {}",
+                path.display()
+            );
         };
         cursor.push(name);
-        let metadata = fs::symlink_metadata(&cursor)
-            .with_context(|| format!("failed to inspect Kasumi runtime path {}", cursor.display()))?;
+        let metadata = fs::symlink_metadata(&cursor).with_context(|| {
+            format!("failed to inspect Kasumi runtime path {}", cursor.display())
+        })?;
         ensure_real_path_component(&cursor, &metadata)?;
     }
 
@@ -92,7 +114,10 @@ fn ensure_trusted_existing_chain(anchor: &Path, path: &Path, leaf: Option<Requir
             .with_context(|| format!("failed to inspect Kasumi source {}", path.display()))?;
         match required {
             RequiredLeaf::File if !metadata.file_type().is_file() => {
-                bail!("Kasumi source is not a real regular file: {}", path.display())
+                bail!(
+                    "Kasumi source is not a real regular file: {}",
+                    path.display()
+                )
             }
             RequiredLeaf::Directory if !metadata.file_type().is_dir() => {
                 bail!("Kasumi source is not a real directory: {}", path.display())
@@ -118,15 +143,22 @@ fn ensure_trusted_target_chain(anchor: &Path, target: &Path) -> Result<()> {
             Ok(_) => return ensure_trusted_existing_chain(anchor, cursor, None),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to inspect Kasumi target {}", cursor.display()));
+                return Err(error).with_context(|| {
+                    format!("failed to inspect Kasumi target {}", cursor.display())
+                });
             }
         }
         let Some(parent) = cursor.parent() else {
-            bail!("Kasumi target has no trusted existing ancestor: {}", target.display());
+            bail!(
+                "Kasumi target has no trusted existing ancestor: {}",
+                target.display()
+            );
         };
         if parent == cursor || !parent.starts_with(anchor) {
-            bail!("Kasumi target has no trusted existing ancestor: {}", target.display());
+            bail!(
+                "Kasumi target has no trusted existing ancestor: {}",
+                target.display()
+            );
         }
         cursor = parent;
     }
@@ -204,7 +236,10 @@ fn ensure_stable_directory_source(path: &Path) -> Result<()> {
     let mut scanned = 0usize;
     while let Some((directory, depth)) = queue.pop_front() {
         if depth > MAX_DIRECTORY_DEPTH {
-            bail!("Kasumi source tree exceeds maximum depth at {}", directory.display());
+            bail!(
+                "Kasumi source tree exceeds maximum depth at {}",
+                directory.display()
+            );
         }
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("failed to scan Kasumi source tree {}", directory.display()))?
@@ -215,13 +250,17 @@ fn ensure_stable_directory_source(path: &Path) -> Result<()> {
             }
             let entry = entry?;
             let path = entry.path();
-            let metadata = fs::symlink_metadata(&path)
-                .with_context(|| format!("failed to inspect Kasumi source entry {}", path.display()))?;
+            let metadata = fs::symlink_metadata(&path).with_context(|| {
+                format!("failed to inspect Kasumi source entry {}", path.display())
+            })?;
             ensure_real_path_component(&path, &metadata)?;
             if metadata.file_type().is_dir() {
                 queue.push_back((path, depth + 1));
             } else if !metadata.file_type().is_file() {
-                bail!("Kasumi source tree contains a special node: {}", path.display());
+                bail!(
+                    "Kasumi source tree contains a special node: {}",
+                    path.display()
+                );
             }
         }
     }
@@ -233,8 +272,7 @@ pub fn validate_live_config(config: &crate::conf::schema::Config) -> Result<()> 
         return Ok(());
     }
     for rule in &config.kasumi.kstat_rules {
-        ensure_stable_target(&rule.target_pathname)
-            .context("unsafe Kasumi kstat target")?;
+        ensure_stable_target(&rule.target_pathname).context("unsafe Kasumi kstat target")?;
     }
     if !config.kasumi.statfs_spoof.path.as_os_str().is_empty() {
         ensure_stable_target(&config.kasumi.statfs_spoof.path)
@@ -295,7 +333,9 @@ mod tests {
     #[test]
     fn managed_targets_are_classified_as_stable_roots() {
         assert!(is_managed_target(Path::new("/system/app/Example.apk")));
-        assert!(is_managed_target(Path::new("/vendor/lib64/soundfx/libfx.so")));
+        assert!(is_managed_target(Path::new(
+            "/vendor/lib64/soundfx/libfx.so"
+        )));
         assert!(!is_managed_target(Path::new("/data/local/tmp/file")));
     }
 

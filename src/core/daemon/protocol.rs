@@ -174,7 +174,9 @@ pub enum KasumiCommand {
     RuleMerge {
         #[serde(deserialize_with = "crate::kasumi_runtime_safety::deserialize_stable_target")]
         target: PathBuf,
-        #[serde(deserialize_with = "crate::kasumi_runtime_safety::deserialize_stable_directory_source")]
+        #[serde(
+            deserialize_with = "crate::kasumi_runtime_safety::deserialize_stable_directory_source"
+        )]
         source: PathBuf,
     },
     #[serde(rename = "kasumi-rule-hide")]
@@ -188,7 +190,9 @@ pub enum KasumiCommand {
     RuleAddDir {
         #[serde(deserialize_with = "crate::kasumi_runtime_safety::deserialize_stable_target")]
         target_base: PathBuf,
-        #[serde(deserialize_with = "crate::kasumi_runtime_safety::deserialize_stable_directory_source")]
+        #[serde(
+            deserialize_with = "crate::kasumi_runtime_safety::deserialize_stable_directory_source"
+        )]
         source_dir: PathBuf,
     },
     #[serde(rename = "kasumi-rule-remove-dir")]

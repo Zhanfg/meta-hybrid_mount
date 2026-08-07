@@ -111,6 +111,8 @@ fn load_main_config(path: &Path) -> Result<Config> {
     let mut config = toml::from_str::<Config>(&content)
         .with_context(|| format!("failed to parse config file {}", path.display()))?;
     config.sanitize_disabled_features();
+    crate::path_safety::validate_config_targets(&config)
+        .context("config contains a protected runtime or radio-critical target")?;
     Ok(config)
 }
 
@@ -215,5 +217,28 @@ mod tests {
         fs::write(&path, vec![b'x'; 1025]).unwrap();
 
         assert!(read_trusted_text_file(&path, 1024).is_err());
+    }
+
+    #[test]
+    fn startup_loader_rejects_protected_custom_bind_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+moduledir = "/data/adb/modules"
+mountsource = "KSU"
+overlay_mode = "ext4"
+disable_umount = false
+default_mode = "overlay"
+
+[[custom_mounts]]
+source = "/data/local/tmp/source"
+target = "/vendor/firmware/modem.mbn"
+"#,
+        )
+        .unwrap();
+
+        assert!(load_main_config(&path).is_err());
     }
 }
