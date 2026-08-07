@@ -12,16 +12,57 @@ STATE_FILE="$RUN_DIR/daemon_state.json"
 KASUMI_RULE_SNAPSHOT_FILE="$RUN_DIR/kasumi_mount_rules.json"
 FAILURE_FILE="$BASE_DIR/last_boot_failure"
 DISABLE_FILE="$MODDIR/disable"
-
-mkdir -p "$BASE_DIR" "$RUN_DIR" || exit 1
-
 BINARY="$MODDIR/hybrid-mount"
 
-if [ ! -f "$BINARY" ]; then
-  echo "ERROR: Binary not found at $BINARY"
+self_disable_without_runtime_touch() {
+  reason="$1"
   rm -f "$DISABLE_FILE"
-  : >"$DISABLE_FILE"
+  if ! : >"$DISABLE_FILE"; then
+    echo "ERROR: $reason; self-disable marker could not be created" >&2
+  else
+    echo "ERROR: $reason; REHYBIRD disabled for next boot" >&2
+  fi
   exit 1
+}
+
+secure_runtime_dir() {
+  path="$1"
+
+  if [ -L "$path" ]; then
+    return 1
+  fi
+  if [ -e "$path" ] && [ ! -d "$path" ]; then
+    return 1
+  fi
+  if [ ! -d "$path" ]; then
+    mkdir -m 0700 "$path" || return 1
+  fi
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  chown 0:0 "$path" 2>/dev/null || return 1
+  chmod 0700 "$path" 2>/dev/null || return 1
+
+  resolved="$(readlink -f "$path" 2>/dev/null || true)"
+  [ "$resolved" = "$path" ] || return 1
+}
+
+# Fail closed before creating, deleting or overwriting anything below the
+# private runtime tree. Rust repeats these checks, but shell startup must not
+# follow an unsafe path before the Rust process gets a chance to reject it.
+if [ -L "$BASE_DIR" ] || { [ -e "$BASE_DIR" ] && [ ! -d "$BASE_DIR" ]; }; then
+  self_disable_without_runtime_touch "private data root is not a real directory"
+fi
+if ! secure_runtime_dir "$BASE_DIR"; then
+  self_disable_without_runtime_touch "private data root failed ownership/path validation"
+fi
+if [ -L "$RUN_DIR" ] || { [ -e "$RUN_DIR" ] && [ ! -d "$RUN_DIR" ]; }; then
+  self_disable_without_runtime_touch "runtime directory is not a real directory"
+fi
+if ! secure_runtime_dir "$RUN_DIR"; then
+  self_disable_without_runtime_touch "runtime directory failed ownership/path validation"
+fi
+
+if [ ! -f "$BINARY" ] || [ -L "$BINARY" ]; then
+  self_disable_without_runtime_touch "binary is missing or is a symbolic link: $BINARY"
 fi
 
 cleanup_runtime_files() {
@@ -52,7 +93,7 @@ best_effort_unload_owned_kasumi() {
   fi
 }
 
-chmod 755 "$BINARY"
+chmod 755 "$BINARY" || self_disable_without_runtime_touch "binary permissions could not be secured"
 cleanup_runtime_files
 
 "$BINARY"
