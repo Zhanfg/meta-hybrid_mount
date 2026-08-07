@@ -3,15 +3,68 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # shellcheck shell=sh disable=SC3043
 
-if [ -z "$APATCH" ] && [ -z "$KSU" ]; then
+if [ -z "${APATCH:-}" ] && [ -z "${KSU:-}" ]; then
   abort "! unsupported root platform"
 fi
 
-if [ -n "$KSU_LATE_LOAD" ] && [ -n "$KSU" ]; then
+if [ -n "${KSU_LATE_LOAD:-}" ] && [ -n "${KSU:-}" ]; then
   abort "! unsupported late load mode"
 fi
 
-unzip -o "$ZIPFILE" -d "$MODPATH" >&2
+validate_zip_paths() {
+  entry_list="${TMPDIR:-/data/local/tmp}/rehybird-zip-entries.$$"
+  rm -f "$entry_list"
+
+  if ! unzip -Z1 "$ZIPFILE" >"$entry_list" 2>/dev/null; then
+    if ! unzip -l "$ZIPFILE" 2>/dev/null | awk '
+      NR <= 3 { next }
+      /^[[:space:]]*-+[[:space:]]+-+/ { next }
+      {
+        line = $0
+        sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9-]+[[:space:]]+[0-9:]+[[:space:]]+/, "", line)
+        if (line != "") print line
+      }
+    ' >"$entry_list"; then
+      rm -f "$entry_list"
+      return 1
+    fi
+  fi
+
+  unsafe=false
+  while IFS= read -r entry; do
+    case "$entry" in
+    /* | ../* | */../* | */.. | *\\*)
+      ui_print "! Unsafe archive entry: $entry"
+      unsafe=true
+      break
+      ;;
+    esac
+  done <"$entry_list"
+  rm -f "$entry_list"
+  [ "$unsafe" = false ]
+}
+
+ui_print "- Verifying archive CRC..."
+if ! unzip -t "$ZIPFILE" >/dev/null 2>&1; then
+  abort "! Package CRC verification failed; refusing partial installation"
+fi
+if ! validate_zip_paths; then
+  abort "! Package contains an unsafe path"
+fi
+if ! unzip -o "$ZIPFILE" -d "$MODPATH" >&2; then
+  abort "! Package extraction failed; refusing partial installation"
+fi
+
+if [ ! -r "$MODPATH/package-integrity.sh" ]; then
+  abort "! Package integrity validator is missing"
+fi
+# shellcheck source=module/package-integrity.sh
+. "$MODPATH/package-integrity.sh"
+if ! rehybird_validate_package_tree "$MODPATH"; then
+  abort "! Package structure or flavor validation failed"
+fi
+ui_print "- Package integrity verified: $REHYBIRD_PACKAGE_FLAVOR"
+
 case "$ARCH" in
 "arm64")
   ;;
@@ -22,17 +75,21 @@ esac
 ui_print "- Device Architecture: $ARCH"
 
 NANO_MODE=false
-if [ -f "$MODPATH/.nano" ]; then
+if [ "$REHYBIRD_PACKAGE_FLAVOR" = nano ]; then
   NANO_MODE=true
   ui_print "- Flavor: Nano (config-only)"
+elif [ "$REHYBIRD_PACKAGE_FLAVOR" = lite ]; then
+  ui_print "- Flavor: Lite"
+else
+  ui_print "- Flavor: Full"
 fi
+
 BIN_SOURCE="$MODPATH/binaries/hybrid-mount"
 BIN_TARGET="$MODPATH/hybrid-mount"
-if [ ! -f "$BIN_SOURCE" ]; then
-  abort "! Binary not found in this zip!"
-fi
 ui_print "- Installing binary..."
-cp -f "$BIN_SOURCE" "$BIN_TARGET"
+if ! cp -f "$BIN_SOURCE" "$BIN_TARGET"; then
+  abort "! Failed to install verified binary"
+fi
 set_perm "$BIN_TARGET" 0 0 0755
 rm -rf "$MODPATH/binaries"
 rm -rf "$MODPATH/system"
@@ -40,7 +97,7 @@ if [ "$NANO_MODE" = "true" ]; then
   rm -rf "$MODPATH/webroot" "$MODPATH/launcher.png"
 fi
 BASE_DIR="/data/adb/hybrid-mount"
-mkdir -p "$BASE_DIR"
+mkdir -p "$BASE_DIR" || abort "! Failed to create $BASE_DIR"
 
 wait_volume_key_or_timeout() {
   local timeout_seconds start_time current_time key_event
@@ -96,7 +153,9 @@ KEY_volume_detect() {
 if [ ! -f "$BASE_DIR/config.toml" ]; then
   ui_print "- Fresh installation detected"
   ui_print "- Installing default config..."
-  cat "$MODPATH/config.toml" >"$BASE_DIR/config.toml"
+  if ! cat "$MODPATH/config.toml" >"$BASE_DIR/config.toml"; then
+    abort "! Failed to install default config"
+  fi
   if [ "$NANO_MODE" = "true" ]; then
     ui_print "- Nano mode uses config.toml only; skipping setup wizard"
   else
@@ -109,7 +168,9 @@ fi
 
 if [ ! -f "$BASE_DIR/module_blacklist.toml" ]; then
   ui_print "- Installing default module blacklist..."
-  cat "$MODPATH/module_blacklist.toml" >"$BASE_DIR/module_blacklist.toml"
+  if ! cat "$MODPATH/module_blacklist.toml" >"$BASE_DIR/module_blacklist.toml"; then
+    abort "! Failed to install default module blacklist"
+  fi
 fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
