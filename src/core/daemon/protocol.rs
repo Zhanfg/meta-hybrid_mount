@@ -166,6 +166,7 @@ pub enum KasumiCommand {
         #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_target")]
         target: PathBuf,
         source: PathBuf,
+        #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_file_type")]
         file_type: i32,
     },
     #[serde(rename = "kasumi-rule-merge")]
