@@ -302,8 +302,43 @@ where
     )))
 }
 
+pub fn deserialize_safe_kasumi_file_source<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    let metadata = fs::symlink_metadata(&path).map_err(D::Error::custom)?;
+    let file_type = metadata.file_type();
+    if file_type.is_file() || file_type.is_symlink() {
+        return Ok(path);
+    }
+    Err(D::Error::custom(format!(
+        "direct Kasumi ADD source must be a regular file or symlink: {}",
+        path.display()
+    )))
+}
+
+pub fn deserialize_safe_kasumi_directory_source<'de, D>(
+    deserializer: D,
+) -> Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    let resolved = fs::canonicalize(&path).map_err(D::Error::custom)?;
+    if resolved.is_dir() {
+        return Ok(path);
+    }
+    Err(D::Error::custom(format!(
+        "Kasumi directory source is not a directory: {}",
+        path.display()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
+    use serde::de::IntoDeserializer;
+
     use super::*;
 
     #[test]
