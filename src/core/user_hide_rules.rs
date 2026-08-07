@@ -186,9 +186,17 @@ pub fn remove_user_hide_rule(path: &Path) -> Result<bool> {
     save_user_hide_rules_to(rules_path, &updated)?;
     if updated.iter().all(|rule| validate_hide_path(rule).is_ok()) {
         let config = load_runtime_config()?;
-        if config.kasumi.enabled {
-            kasumi_mount::apply_runtime_config(&config)
-                .context("failed to rebuild Kasumi runtime after hide-rule removal")?;
+        if config.kasumi.enabled
+            && let Err(update_error) = kasumi_mount::apply_runtime_config(&config)
+        {
+            return match kasumi_mount::rollback_runtime() {
+                Ok(()) => Err(update_error.context(
+                    "failed to rebuild Kasumi runtime after hide-rule removal; stale runtime was disabled and cleared",
+                )),
+                Err(cleanup_error) => bail!(
+                    "hide-rule removal rebuild failed and stale Kasumi runtime cleanup also failed: update={update_error:#}; cleanup={cleanup_error:#}"
+                ),
+            };
         }
     }
     Ok(true)
