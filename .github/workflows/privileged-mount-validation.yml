@@ -1,0 +1,71 @@
+# Copyright (C) 2026 YuzakiKokuban <heibanbaize@gmail.com>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: privileged-mount-validation
+
+on:
+  push:
+    branches:
+      - 'validation/**'
+    paths:
+      - 'src/mount/magic_mount/**'
+      - 'src/mount/umount_mgr.rs'
+      - '.github/workflows/privileged-mount-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  magic-mount-namespace:
+    name: Magic Mount private namespace
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout validation branch
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+
+      - name: Build privileged library test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --lib \
+            privileged_magic_mount_excludes_temporary_worktree_from_unmount_registration \
+            --no-run
+
+          TEST_BINARY="$(
+            find target/debug/deps \
+              -maxdepth 1 \
+              -type f \
+              -perm -111 \
+              -name 'hybrid_mount-*' \
+              -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2-
+          )"
+          test -n "$TEST_BINARY"
+          test -x "$TEST_BINARY"
+          printf 'TEST_BINARY=%s\n' "$TEST_BINARY" >> "$GITHUB_ENV"
+
+      - name: Run real mounts in isolated namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo unshare --mount --propagation private -- \
+            "$GITHUB_WORKSPACE/$TEST_BINARY" \
+            privileged_magic_mount_excludes_temporary_worktree_from_unmount_registration \
+            --ignored \
+            --nocapture \
+            --exact \
+            --test-threads=1
