@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
+// Flash-candidate revalidation marker: build and lint this exact source tree.
 pub mod conf;
 pub mod core;
 pub mod defs;
