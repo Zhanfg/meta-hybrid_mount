@@ -2,16 +2,16 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(all(unix, feature = "kasumi"))]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::{fs, path::Path};
 #[cfg(feature = "kasumi")]
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Take},
 };
-use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 
