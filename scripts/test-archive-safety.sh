@@ -37,6 +37,15 @@ with warnings.catch_warnings():
 with zipfile.ZipFile(root / "bad-name.zip", "w") as archive:
     archive.writestr("file with spaces.txt", b"bad")
 
+with zipfile.ZipFile(root / "empty-component.zip", "w") as archive:
+    archive.writestr("directory//file.txt", b"bad")
+
+with zipfile.ZipFile(root / "dot-component.zip", "w") as archive:
+    archive.writestr("directory/./file.txt", b"bad")
+
+with zipfile.ZipFile(root / "leading-dot-component.zip", "w") as archive:
+    archive.writestr("./file.txt", b"bad")
+
 with zipfile.ZipFile(root / "symlink-chain.zip", "w") as archive:
     link = zipfile.ZipInfo("link")
     link.create_system = 3
@@ -75,6 +84,9 @@ rehybird_extract_regular_archive "$temp_dir/valid.zip" "$valid_tree" "$valid_man
 expect_manifest_failure "$temp_dir/traversal.zip" traversal
 expect_manifest_failure "$temp_dir/duplicate.zip" duplicate
 expect_manifest_failure "$temp_dir/bad-name.zip" bad-name
+expect_manifest_failure "$temp_dir/empty-component.zip" empty-component
+expect_manifest_failure "$temp_dir/dot-component.zip" dot-component
+expect_manifest_failure "$temp_dir/leading-dot-component.zip" leading-dot-component
 
 symlink_manifest="$temp_dir/symlink-chain.manifest"
 symlink_tree="$temp_dir/symlink-tree"
