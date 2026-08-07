@@ -26,6 +26,7 @@ create_common_tree() {
   cp module/metauninstall.sh "$root/metauninstall.sh"
   cp module/package-integrity.sh "$root/package-integrity.sh"
   cp module/sepolicy.rule "$root/sepolicy.rule"
+  cp module/uninstall-safety.sh "$root/uninstall-safety.sh"
   cp module/uninstall.sh "$root/uninstall.sh"
   printf '\177ELFmock\n' >"$root/binaries/hybrid-mount"
 }
@@ -116,6 +117,11 @@ missing_validator="$temp_dir/missing-validator"
 cp -a "$lite" "$missing_validator"
 rm "$missing_validator/package-integrity.sh"
 expect_invalid "$missing_validator" 'missing installed validator'
+
+missing_uninstall_guard="$temp_dir/missing-uninstall-guard"
+cp -a "$lite" "$missing_uninstall_guard"
+rm "$missing_uninstall_guard/uninstall-safety.sh"
+expect_invalid "$missing_uninstall_guard" 'missing uninstall safety helper'
 
 bad_shell="$temp_dir/bad-shell"
 cp -a "$lite" "$bad_shell"
