@@ -310,10 +310,13 @@ mod tests {
     #[test]
     fn kstat_rules_require_auditable_paths() {
         let mut config = crate::conf::schema::Config::default();
-        config.kasumi.kstat_rules.push(crate::conf::schema::KasumiKstatRuleConfig {
-            target_ino: 123,
-            ..crate::conf::schema::KasumiKstatRuleConfig::default()
-        });
+        config
+            .kasumi
+            .kstat_rules
+            .push(crate::conf::schema::KasumiKstatRuleConfig {
+                target_ino: 123,
+                ..crate::conf::schema::KasumiKstatRuleConfig::default()
+            });
         assert!(validate_config_targets(&config).is_err());
 
         config.kasumi.kstat_rules[0].target_pathname = "/system/app/Example/Example.apk".into();
