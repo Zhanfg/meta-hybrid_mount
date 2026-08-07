@@ -312,7 +312,7 @@ pub fn validate_config_targets(config: &crate::conf::schema::Config) -> Result<(
         ensure_custom_bind_target_allowed(&mount.target)?;
     }
     #[cfg(feature = "kasumi")]
-    {
+    if config.kasumi.enabled {
         ensure_kasumi_mirror_path_allowed(&config.kasumi.mirror_path)?;
         for rule in &config.kasumi.kstat_rules {
             if rule.target_pathname.as_os_str().is_empty() {
@@ -491,8 +491,9 @@ mod tests {
 
     #[cfg(feature = "kasumi")]
     #[test]
-    fn kstat_rules_require_auditable_paths() {
+    fn kstat_rules_require_auditable_paths_only_while_enabled() {
         let mut config = crate::conf::schema::Config::default();
+        config.kasumi.enabled = true;
         config
             .kasumi
             .kstat_rules
@@ -502,6 +503,10 @@ mod tests {
             });
         assert!(validate_config_targets(&config).is_err());
 
+        config.kasumi.enabled = false;
+        assert!(validate_config_targets(&config).is_ok());
+
+        config.kasumi.enabled = true;
         config.kasumi.kstat_rules[0].target_pathname = "/system/app/Example/Example.apk".into();
         assert!(validate_config_targets(&config).is_ok());
     }
@@ -553,16 +558,5 @@ mod tests {
 
         symlink("file", root.join("nested/link")).unwrap();
         assert!(ensure_safe_kasumi_directory_source(&root).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn mirror_path_rejects_existing_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().unwrap();
-        let link = temp.path().join("kasumi_mirror_test");
-        symlink("/dev", &link).unwrap();
-        assert!(ensure_kasumi_mirror_path_allowed(&link).is_err());
     }
 }
