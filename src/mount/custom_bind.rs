@@ -182,8 +182,15 @@ fn normalize_managed_alias_text(target: &Path) -> String {
 fn target_is_critical_system_path(target: &Path) -> bool {
     let text = normalize_managed_alias_text(target);
 
-    if ["/system", "/vendor", "/odm", "/product", "/system_ext", "/my_carrier"]
-        .contains(&text.as_str())
+    if [
+        "/system",
+        "/vendor",
+        "/odm",
+        "/product",
+        "/system_ext",
+        "/my_carrier",
+    ]
+    .contains(&text.as_str())
     {
         return true;
     }
