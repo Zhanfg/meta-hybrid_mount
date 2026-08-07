@@ -27,8 +27,16 @@ cleanup_runtime_files() {
     "$KASUMI_RULE_SNAPSHOT_FILE"
 }
 
+cleanup_empty_staging_dirs() {
+  for stale_dir in "$RUN_DIR"/staging_*; do
+    [ -d "$stale_dir" ] || continue
+    rmdir "$stale_dir" 2>/dev/null || true
+  done
+}
+
 chmod 755 "$BINARY"
 cleanup_runtime_files
+cleanup_empty_staging_dirs
 
 "$BINARY"
 STATUS=$?
