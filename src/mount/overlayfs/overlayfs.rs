@@ -107,7 +107,10 @@ fn cleanup_staging_mounts(staging_dirs: &[PathBuf]) -> Result<()> {
     }
 
     if !errors.is_empty() {
-        bail!("failed to clean OverlayFS staging mounts: {}", errors.join(" | "));
+        bail!(
+            "failed to clean OverlayFS staging mounts: {}",
+            errors.join(" | ")
+        );
     }
 
     Ok(())
@@ -164,9 +167,7 @@ pub fn mount_overlayfs(
             bottom_chunk.len()
         );
 
-        if register_umount
-            && let Err(error) = send_umountable(&staging_dir)
-        {
+        if register_umount && let Err(error) = send_umountable(&staging_dir) {
             if let Err(cleanup_error) = cleanup_staging_mounts(&staging_dirs) {
                 bail!(
                     "failed to queue OverlayFS staging unmount and rollback failed: registration={error:#}; rollback={cleanup_error:#}"
