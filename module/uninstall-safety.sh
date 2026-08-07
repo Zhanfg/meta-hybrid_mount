@@ -8,7 +8,23 @@ rehybird_mountinfo_references_path() {
 
   for mountinfo in "$@"; do
     [ -r "$mountinfo" ] || continue
-    if grep -F "$base_dir" "$mountinfo" >/dev/null 2>&1; then
+    if awk -v base="$base_dir" '
+      {
+        start = index($0, base)
+        while (start > 0) {
+          suffix = substr($0, start + length(base))
+          if (suffix == "" || suffix ~ /^[\/ ,:]/) {
+            found = 1
+            exit
+          }
+          remainder = substr($0, start + 1)
+          next_start = index(remainder, base)
+          if (next_start == 0) break
+          start += next_start
+        }
+      }
+      END { exit found ? 0 : 1 }
+    ' "$mountinfo"; then
       return 0
     fi
   done
