@@ -29,8 +29,14 @@ BOOTSTRAP_LISTING="$INSTALL_WORK_ROOT/archive.listing"
 ARCHIVE_HELPER="$INSTALL_WORK_ROOT/archive-safety.sh"
 ARCHIVE_MANIFEST="$INSTALL_WORK_ROOT/archive.manifest"
 STAGED_TREE="$INSTALL_WORK_ROOT/staged"
+MODULE_BACKUP="$INSTALL_WORK_ROOT/previous-module-tree"
+PRESERVE_INSTALL_WORK=false
 
 cleanup_install_work() {
+  if [ "${PRESERVE_INSTALL_WORK:-false}" = true ]; then
+    echo "REHYBIRD: preserving recovery workspace at $INSTALL_WORK_ROOT" >&2
+    return 0
+  fi
   rm -rf "$INSTALL_WORK_ROOT"
 }
 trap cleanup_install_work 0
@@ -52,7 +58,7 @@ bootstrap_validate_archive() {
       if (size > max_file || total > max_total || count > max_entries) bad = 1
       if (seen[name]++) bad = 1
       if (name !~ /^[A-Za-z0-9._\/-]+$/) bad = 1
-      if (name ~ /^\// || name ~ /^[A-Za-z]:/ || name ~ /(^|\/)\.\.(\/|$)/ || name ~ /\\/) bad = 1
+      if (name ~ /^\// || name ~ /^[A-Za-z]:/ || name ~ /(^|\/)\.\.(\/|$)/ || name ~ /(^|\/)\.(\/|$)/ || name ~ /\/\// || name ~ /\\/) bad = 1
       if (name == "archive-safety.sh") helper_count++
     }
     END {
@@ -62,6 +68,15 @@ bootstrap_validate_archive() {
   status=$?
   rm -f "$BOOTSTRAP_LISTING"
   return "$status"
+}
+
+rollback_final_tree_or_preserve() {
+  reason="$1"
+  if rehybird_rollback_module_tree "$MODPATH" "$MODULE_BACKUP"; then
+    abort "$reason; previous module tree was restored"
+  fi
+  PRESERVE_INSTALL_WORK=true
+  abort "$reason; rollback failed, recovery workspace preserved at $INSTALL_WORK_ROOT"
 }
 
 ui_print "- Verifying archive CRC and bootstrap layout..."
@@ -88,8 +103,8 @@ fi
 if ! rehybird_extract_regular_archive "$ZIPFILE" "$STAGED_TREE" "$ARCHIVE_MANIFEST"; then
   abort "! Regular-file-only package extraction failed"
 fi
-if [ ! -r "$STAGED_TREE/package-integrity.sh" ]; then
-  abort "! Package integrity validator is missing from staged tree"
+if [ ! -r "$STAGED_TREE/package-integrity.sh" ] || ! sh -n "$STAGED_TREE/package-integrity.sh"; then
+  abort "! Staged package integrity validator is missing or invalid"
 fi
 # shellcheck source=module/package-integrity.sh
 . "$STAGED_TREE/package-integrity.sh"
@@ -98,32 +113,35 @@ if ! rehybird_validate_package_tree "$STAGED_TREE"; then
 fi
 STAGED_FLAVOR="$REHYBIRD_PACKAGE_FLAVOR"
 
-replace_status=0
-rehybird_replace_module_tree "$STAGED_TREE" "$MODPATH" || replace_status=$?
-case "$replace_status" in
+stage_status=0
+rehybird_stage_module_tree "$STAGED_TREE" "$MODPATH" "$MODULE_BACKUP" || stage_status=$?
+case "$stage_status" in
 0)
   ;;
-2)
-  abort "! New package backup cleanup failed; previous module tree was restored"
-  ;;
 3)
-  abort "! Verified package installation and rollback both failed"
+  PRESERVE_INSTALL_WORK=true
+  abort "! Verified package staging and rollback both failed; recovery workspace preserved at $INSTALL_WORK_ROOT"
   ;;
 *)
   abort "! Verified package could not replace installer staging tree"
   ;;
 esac
 
-if [ ! -r "$MODPATH/package-integrity.sh" ]; then
-  abort "! Final package integrity validator is missing"
+if [ ! -r "$MODPATH/package-integrity.sh" ] || ! sh -n "$MODPATH/package-integrity.sh"; then
+  rollback_final_tree_or_preserve "! Final package integrity validator is missing or invalid"
 fi
 # shellcheck source=module/package-integrity.sh
 . "$MODPATH/package-integrity.sh"
 if ! rehybird_validate_package_tree "$MODPATH"; then
-  abort "! Final package tree failed post-copy validation"
+  rollback_final_tree_or_preserve "! Final package tree failed post-copy validation"
 fi
 if [ "$REHYBIRD_PACKAGE_FLAVOR" != "$STAGED_FLAVOR" ]; then
-  abort "! Package flavor changed during installation"
+  rollback_final_tree_or_preserve "! Package flavor changed during installation"
+fi
+if ! rehybird_commit_module_tree "$MODULE_BACKUP"; then
+  PRESERVE_INSTALL_WORK=true
+  ui_print "! Verified package is active, but previous-tree cleanup failed"
+  ui_print "! Recovery workspace preserved: $INSTALL_WORK_ROOT"
 fi
 ui_print "- Package integrity verified: $REHYBIRD_PACKAGE_FLAVOR"
 
