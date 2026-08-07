@@ -230,8 +230,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            validate_mount_paths(Path::new("/missing-source"), Path::new("/proc/sys"))
-                .is_err()
+            validate_mount_paths(Path::new("/missing-source"), Path::new("/proc/sys")).is_err()
         );
     }
 

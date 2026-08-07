@@ -267,13 +267,7 @@ fn delete_registration(target: &Path) -> Result<()> {
     let path = CString::new(target.as_os_str().as_bytes())
         .with_context(|| format!("try-umount target contains NUL: {}", target.display()))?;
     let cmd = AddTryUmountCmd::delete(path.as_ptr() as u64);
-    let ret = unsafe {
-        libc::ioctl(
-            ksu_driver_fd()?,
-            KSU_IOCTL_ADD_TRY_UMOUNT,
-            &cmd,
-        )
-    };
+    let ret = unsafe { libc::ioctl(ksu_driver_fd()?, KSU_IOCTL_ADD_TRY_UMOUNT, &cmd) };
     if ret < 0 {
         return Err(std::io::Error::last_os_error()).with_context(|| {
             format!(

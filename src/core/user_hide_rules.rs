@@ -51,12 +51,8 @@ fn load_user_hide_rules_from(path: &Path) -> Result<Vec<PathBuf>> {
     let mut seen = HashSet::new();
     let mut rules = Vec::with_capacity(values.len());
     for value in values {
-        let rule = validate_hide_path(Path::new(&value)).with_context(|| {
-            format!(
-                "invalid user hide rule in {}: {value}",
-                path.display()
-            )
-        })?;
+        let rule = validate_hide_path(Path::new(&value))
+            .with_context(|| format!("invalid user hide rule in {}: {value}", path.display()))?;
         if seen.insert(rule.clone()) {
             rules.push(rule);
         }

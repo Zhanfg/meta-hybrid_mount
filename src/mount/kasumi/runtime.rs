@@ -15,13 +15,10 @@ use super::{
     cleanup,
     common::{
         build_managed_partitions, effective_maps_spoof_enabled, effective_mount_hide_enabled,
-        effective_selinux_fix_enabled, effective_statfs_spoof_enabled,
-        effective_stealth_enabled, feature_supported, has_uname_spoof_config, to_c_long,
-        to_c_ulong,
+        effective_selinux_fix_enabled, effective_statfs_spoof_enabled, effective_stealth_enabled,
+        feature_supported, has_uname_spoof_config, to_c_long, to_c_ulong,
     },
-    compile::{
-        CompiledRules, compile_rules, log_compiled_rule_summary, virtual_target_is_managed,
-    },
+    compile::{CompiledRules, compile_rules, log_compiled_rule_summary, virtual_target_is_managed},
     status::{can_operate, hook_lines},
 };
 use crate::{
@@ -29,12 +26,7 @@ use crate::{
         config,
         schema::{self, KasumiUnameMode},
     },
-    core::{
-        inventory::Module,
-        ops::plan::MountPlan,
-        runtime_state::RuntimeState,
-        user_hide_rules,
-    },
+    core::{inventory::Module, ops::plan::MountPlan, runtime_state::RuntimeState, user_hide_rules},
     defs,
     sys::{
         fs::atomic_write,
@@ -450,8 +442,12 @@ fn validate_add_source(source: &Path, mirror_root: &Path) -> Result<()> {
             mirror_root.display()
         );
     }
-    fs::symlink_metadata(source)
-        .with_context(|| format!("persisted Kasumi ADD source is unavailable: {}", source.display()))?;
+    fs::symlink_metadata(source).with_context(|| {
+        format!(
+            "persisted Kasumi ADD source is unavailable: {}",
+            source.display()
+        )
+    })?;
     let parent = source
         .parent()
         .context("persisted Kasumi ADD source has no parent")?;

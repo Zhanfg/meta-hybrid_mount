@@ -790,7 +790,9 @@ mod tests {
     #[test]
     fn webui_rpc_only_accepts_the_canonical_config_path() {
         assert!(webui_config_path_is_allowed(Path::new(defs::CONFIG_FILE)));
-        assert!(!webui_config_path_is_allowed(Path::new("/data/local/tmp/config.toml")));
+        assert!(!webui_config_path_is_allowed(Path::new(
+            "/data/local/tmp/config.toml"
+        )));
         assert!(!webui_config_path_is_allowed(Path::new("config.toml")));
     }
 

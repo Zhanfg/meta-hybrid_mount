@@ -151,13 +151,14 @@ pub(super) fn compile_rules(
             if !requested_partition_root.is_dir() {
                 continue;
             }
-            let partition_root = fs::canonicalize(&requested_partition_root).with_context(|| {
-                format!(
-                    "failed to resolve Kasumi partition root for module {}: {}",
-                    module.id,
-                    requested_partition_root.display()
-                )
-            })?;
+            let partition_root =
+                fs::canonicalize(&requested_partition_root).with_context(|| {
+                    format!(
+                        "failed to resolve Kasumi partition root for module {}: {}",
+                        module.id,
+                        requested_partition_root.display()
+                    )
+                })?;
             if partition_root == module_root || !partition_root.starts_with(&module_root) {
                 bail!(
                     "Kasumi partition source escaped the module mirror: module={}, partition={}, root={}, module_root={}",
@@ -196,13 +197,14 @@ pub(super) fn compile_rules(
                 }
 
                 let path = entry.path();
-                let relative_in_partition = path.strip_prefix(&partition_root).with_context(|| {
-                    format!(
-                        "Kasumi path {} is outside partition root {}",
-                        path.display(),
-                        partition_root.display()
-                    )
-                })?;
+                let relative_in_partition =
+                    path.strip_prefix(&partition_root).with_context(|| {
+                        format!(
+                            "Kasumi path {} is outside partition root {}",
+                            path.display(),
+                            partition_root.display()
+                        )
+                    })?;
                 let relative = Path::new(partition_name).join(relative_in_partition);
 
                 if !matches!(relative_mode(module, &relative), MountMode::Kasumi) {
@@ -280,10 +282,22 @@ mod tests {
     fn kasumi_targets_must_remain_in_managed_partitions() {
         let managed = HashSet::from(["system".to_string(), "vendor".to_string()]);
 
-        assert!(virtual_target_is_managed(Path::new("/system/etc/file"), &managed));
-        assert!(virtual_target_is_managed(Path::new("/vendor/lib64/file"), &managed));
-        assert!(!virtual_target_is_managed(Path::new("/data/local/tmp/file"), &managed));
+        assert!(virtual_target_is_managed(
+            Path::new("/system/etc/file"),
+            &managed
+        ));
+        assert!(virtual_target_is_managed(
+            Path::new("/vendor/lib64/file"),
+            &managed
+        ));
+        assert!(!virtual_target_is_managed(
+            Path::new("/data/local/tmp/file"),
+            &managed
+        ));
         assert!(!virtual_target_is_managed(Path::new("/"), &managed));
-        assert!(!virtual_target_is_managed(Path::new("relative/path"), &managed));
+        assert!(!virtual_target_is_managed(
+            Path::new("relative/path"),
+            &managed
+        ));
     }
 }

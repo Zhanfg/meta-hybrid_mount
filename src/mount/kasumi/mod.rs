@@ -58,8 +58,7 @@ pub fn apply_runtime_config(config: &Config) -> Result<bool> {
         return Ok(true);
     }
 
-    let lkm_was_loaded =
-        lkm::is_loaded().context("Failed to inspect Kasumi LKM before update")?;
+    let lkm_was_loaded = lkm::is_loaded().context("Failed to inspect Kasumi LKM before update")?;
     match runtime::apply_runtime_config(config) {
         Ok(applied) => Ok(applied),
         Err(update_error) => {
@@ -78,12 +77,9 @@ pub fn apply_runtime_config(config: &Config) -> Result<bool> {
                     );
                     Ok(applied)
                 }
-                Err(retry_error) => rollback_newly_loaded_lkm(
-                    config,
-                    lkm_was_loaded,
-                    update_error,
-                    retry_error,
-                ),
+                Err(retry_error) => {
+                    rollback_newly_loaded_lkm(config, lkm_was_loaded, update_error, retry_error)
+                }
             }
         }
     }
