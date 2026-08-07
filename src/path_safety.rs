@@ -294,11 +294,11 @@ where
     D: Deserializer<'de>,
 {
     let file_type = i32::deserialize(deserializer)?;
-    if file_type == libc::DT_REG as i32 || file_type == libc::DT_LNK as i32 {
+    if file_type == libc::DT_REG as i32 {
         return Ok(file_type);
     }
     Err(D::Error::custom(format!(
-        "direct Kasumi ADD only accepts regular-file or symlink dirent types; got {file_type}"
+        "direct Kasumi ADD only accepts regular-file dirent type; got {file_type}"
     )))
 }
 
@@ -308,12 +308,11 @@ where
 {
     let path = PathBuf::deserialize(deserializer)?;
     let metadata = fs::symlink_metadata(&path).map_err(D::Error::custom)?;
-    let file_type = metadata.file_type();
-    if file_type.is_file() || file_type.is_symlink() {
+    if metadata.file_type().is_file() {
         return Ok(path);
     }
     Err(D::Error::custom(format!(
-        "direct Kasumi ADD source must be a regular file or symlink: {}",
+        "direct Kasumi ADD source must be a real regular file, not a symlink or special node: {}",
         path.display()
     )))
 }
@@ -428,13 +427,14 @@ mod tests {
     }
 
     #[test]
-    fn direct_kasumi_add_rejects_special_node_types() {
+    fn direct_kasumi_add_rejects_non_regular_dirent_types() {
         for file_type in [
             libc::DT_BLK as i32,
             libc::DT_CHR as i32,
             libc::DT_FIFO as i32,
             libc::DT_SOCK as i32,
             libc::DT_DIR as i32,
+            libc::DT_LNK as i32,
         ] {
             let payload = serde_json::json!(file_type);
             let result = deserialize_safe_kasumi_file_type(payload.into_deserializer());
