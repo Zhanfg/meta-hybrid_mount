@@ -163,18 +163,27 @@ pub enum KasumiCommand {
     // -- rules
     #[serde(rename = "kasumi-rule-add")]
     RuleAdd {
+        #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_target")]
         target: PathBuf,
         source: PathBuf,
         file_type: i32,
     },
     #[serde(rename = "kasumi-rule-merge")]
-    RuleMerge { target: PathBuf, source: PathBuf },
+    RuleMerge {
+        #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_target")]
+        target: PathBuf,
+        source: PathBuf,
+    },
     #[serde(rename = "kasumi-rule-hide")]
-    RuleHide { path: PathBuf },
+    RuleHide {
+        #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_target")]
+        path: PathBuf,
+    },
     #[serde(rename = "kasumi-rule-delete")]
     RuleDelete { path: PathBuf },
     #[serde(rename = "kasumi-rule-add-dir")]
     RuleAddDir {
+        #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_target")]
         target_base: PathBuf,
         source_dir: PathBuf,
     },
@@ -187,7 +196,10 @@ pub enum KasumiCommand {
     #[serde(rename = "hide-list")]
     HideList,
     #[serde(rename = "hide-add")]
-    HideAdd { path: PathBuf },
+    HideAdd {
+        #[serde(deserialize_with = "crate::path_safety::deserialize_safe_kasumi_target")]
+        path: PathBuf,
+    },
     #[serde(rename = "hide-remove")]
     HideRemove { path: PathBuf },
     #[serde(rename = "hide-apply")]
