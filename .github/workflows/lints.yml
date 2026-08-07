@@ -52,6 +52,8 @@ jobs:
           while IFS= read -r -d '' script; do
             sh -n "$script"
           done < <(find module -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
+      - name: Test archive safety extraction
+        run: bash scripts/test-archive-safety.sh
       - name: Test metamodule safety helpers
         run: bash scripts/test-metasafety.sh
       - name: Test package integrity validator
