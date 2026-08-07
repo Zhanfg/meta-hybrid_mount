@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 
 #[cfg(feature = "control-plane")]
@@ -108,8 +110,10 @@ fn run_with_config_loader<F>(load_config: F) -> Result<crate::conf::config::Conf
 where
     F: FnOnce() -> Result<crate::conf::config::Config>,
 {
-    sys::fs::ensure_dir_exists(defs::RUN_DIR)
-        .with_context(|| format!("Failed to create run directory: {}", defs::RUN_DIR))?;
+    sys::trusted::ensure_private_dir(Path::new(defs::HYBRID_MOUNT_DIR), 0o700)
+        .context("Failed to validate private REHYBIRD data directory")?;
+    sys::trusted::ensure_private_dir(Path::new(defs::RUN_DIR), 0o700)
+        .with_context(|| format!("Failed to validate private run directory: {}", defs::RUN_DIR))?;
 
     utils::init_logging().context("Failed to initialize logging")?;
     crate::scoped_log!(info, "startup", "init: daemon=hybrid-mount");
