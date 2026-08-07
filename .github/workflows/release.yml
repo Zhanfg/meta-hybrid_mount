@@ -46,6 +46,9 @@ jobs:
       - name: Trust checkout directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Check Kasumi protocol 16/17 ABI
+        run: bash scripts/check-kasumi-uapi-compat.sh
+
       - name: Download Kasumi LKM artifacts
         uses: actions/download-artifact@v8
         with:
@@ -98,6 +101,46 @@ jobs:
           STAGED_ZIP="/tmp/$ZIP_FILENAME"
           cp "$ZIP_PATH" "$STAGED_ZIP"
           echo "STAGED_ZIP=$STAGED_ZIP" >> "$GITHUB_ENV"
+
+      - name: Validate ${{ matrix.flavor }} package
+        env:
+          BUILD_FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -euo pipefail
+          test -n "${STAGED_ZIP:-}"
+          test -s "$STAGED_ZIP"
+          unzip -tqq "$STAGED_ZIP"
+
+          if unzip -Z1 "$STAGED_ZIP" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "Release archive contains an unsafe path."
+            unzip -Z1 "$STAGED_ZIP"
+            exit 1
+          fi
+
+          STAGE_DIR="$(mktemp -d)"
+          trap 'rm -rf "$STAGE_DIR"' EXIT
+          unzip -qq "$STAGED_ZIP" -d "$STAGE_DIR"
+
+          test -s "$STAGE_DIR/module.prop"
+          test -s "$STAGE_DIR/package-integrity.sh"
+          test -s "$STAGE_DIR/binaries/hybrid-mount"
+          grep -Fx 'id=hybrid_mount' "$STAGE_DIR/module.prop"
+          grep -Eq '^versionCode=1[0-9]{9}$' "$STAGE_DIR/module.prop"
+          grep -Fx 'metamodule=1' "$STAGE_DIR/module.prop"
+          file "$STAGE_DIR/binaries/hybrid-mount" | grep -Eq 'ELF 64-bit.*ARM aarch64'
+
+          (
+            cd "$STAGE_DIR"
+            # shellcheck source=/dev/null
+            . ./package-integrity.sh
+            rehybird_validate_package_tree "$PWD"
+            if [ "${REHYBIRD_PACKAGE_FLAVOR:-}" != "$BUILD_FLAVOR" ]; then
+              echo "Release package flavor mismatch: expected=$BUILD_FLAVOR actual=${REHYBIRD_PACKAGE_FLAVOR:-unknown}"
+              exit 1
+            fi
+          )
+
+          sha256sum "$STAGED_ZIP"
 
       - name: Upload ${{ matrix.flavor }} Artifact
         uses: actions/upload-artifact@v7
@@ -200,12 +243,33 @@ jobs:
           set -euo pipefail
           REPO="${{ github.repository }}"
           TAG="${{ github.ref_name }}"
-          CLEAN_VERSION="${TAG#v}"
-          VERSION_CODE=$(awk -F. '{print $1 * 100000 + $2 * 1000 + $3}' <<< "$CLEAN_VERSION")
 
+          FULL_ZIP="${{ steps.paths.outputs.full_zip }}"
+          LITE_ZIP="${{ steps.paths.outputs.lite_zip }}"
+          NANO_ZIP="${{ steps.paths.outputs.nano_zip }}"
           FULL_NAME="${{ steps.paths.outputs.full_name }}"
           LITE_NAME="${{ steps.paths.outputs.lite_name }}"
           NANO_NAME="${{ steps.paths.outputs.nano_name }}"
+
+          read_version_code() {
+            local zip_path="$1"
+            unzip -p "$zip_path" module.prop | sed -n 's/^versionCode=//p' | head -n 1
+          }
+
+          FULL_VERSION_CODE="$(read_version_code "$FULL_ZIP")"
+          LITE_VERSION_CODE="$(read_version_code "$LITE_ZIP")"
+          NANO_VERSION_CODE="$(read_version_code "$NANO_ZIP")"
+
+          if [[ ! "$FULL_VERSION_CODE" =~ ^1[0-9]{9}$ ]]; then
+            echo "Invalid fork versionCode in Full package: $FULL_VERSION_CODE"
+            exit 1
+          fi
+          if [ "$FULL_VERSION_CODE" != "$LITE_VERSION_CODE" ] || [ "$FULL_VERSION_CODE" != "$NANO_VERSION_CODE" ]; then
+            echo "Release flavor versionCode mismatch: full=$FULL_VERSION_CODE lite=$LITE_VERSION_CODE nano=$NANO_VERSION_CODE"
+            exit 1
+          fi
+          VERSION_CODE="$FULL_VERSION_CODE"
+
           FULL_DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$FULL_NAME"
           LITE_DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$LITE_NAME"
           NANO_DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$NANO_NAME"
