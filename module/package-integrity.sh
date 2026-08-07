@@ -20,7 +20,8 @@ rehybird_integrity_error() {
 rehybird_require_file() {
   root="$1"
   relative="$2"
-  [ -s "$root/$relative" ] || rehybird_integrity_error "missing or empty file: $relative"
+  [ -f "$root/$relative" ] && [ -s "$root/$relative" ] \
+    || rehybird_integrity_error "missing, empty, or non-regular file: $relative"
 }
 
 rehybird_require_directory() {
@@ -38,6 +39,52 @@ rehybird_single_property() {
     return 1
   }
   sed -n "s/^${property_name}=//p" "$property_file"
+}
+
+rehybird_validate_no_links_or_special_files() {
+  root="$1"
+  if find "$root" -type l -print 2>/dev/null | grep -q .; then
+    rehybird_integrity_error 'package contains a symbolic link'
+    return 1
+  fi
+  if find "$root" \( -type b -o -type c -o -type p -o -type s \) -print 2>/dev/null | grep -q .; then
+    rehybird_integrity_error 'package contains a device, FIFO, or socket'
+    return 1
+  fi
+}
+
+rehybird_validate_top_level() {
+  root="$1"
+  for candidate in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+    name="${candidate##*/}"
+    case "$name" in
+    .nano | binaries | config.toml | customize.sh | kasumi_lkm | launcher.png | metainstall.sh | metamount.sh | metasafety.sh | metauninstall.sh | module.prop | module_blacklist.toml | package-integrity.sh | sepolicy.rule | uninstall-safety.sh | uninstall.sh | webroot)
+      ;;
+    *)
+      rehybird_integrity_error "unexpected top-level package entry: $name"
+      return 1
+      ;;
+    esac
+  done
+}
+
+rehybird_validate_binary_directory() {
+  root="$1"
+  rehybird_require_directory "$root" binaries || return 1
+  count=0
+  for candidate in "$root/binaries"/* "$root/binaries"/.[!.]* "$root/binaries"/..?*; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+    count=$((count + 1))
+    [ "${candidate##*/}" = hybrid-mount ] || {
+      rehybird_integrity_error "unexpected binary payload: ${candidate##*/}"
+      return 1
+    }
+  done
+  [ "$count" = 1 ] || {
+    rehybird_integrity_error "unexpected binary payload count: $count"
+    return 1
+  }
 }
 
 rehybird_validate_shell_scripts() {
@@ -66,15 +113,15 @@ rehybird_validate_full_lkms() {
   expected_count=0
   for expected in $REHYBIRD_EXPECTED_LKMS; do
     expected_count=$((expected_count + 1))
-    [ -s "$lkm_dir/$expected" ] || {
-      rehybird_integrity_error "missing or empty Kasumi LKM: $expected"
+    [ -f "$lkm_dir/$expected" ] && [ -s "$lkm_dir/$expected" ] || {
+      rehybird_integrity_error "missing, empty, or non-regular Kasumi LKM: $expected"
       return 1
     }
   done
 
   actual_count=0
-  for candidate in "$lkm_dir"/*.ko; do
-    [ -e "$candidate" ] || continue
+  for candidate in "$lkm_dir"/* "$lkm_dir"/.[!.]* "$lkm_dir"/..?*; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
     actual_count=$((actual_count + 1))
     candidate_name="${candidate##*/}"
     known=false
@@ -85,7 +132,7 @@ rehybird_validate_full_lkms() {
       fi
     done
     if [ "$known" != true ]; then
-      rehybird_integrity_error "unexpected Kasumi LKM: $candidate_name"
+      rehybird_integrity_error "unexpected Kasumi payload: $candidate_name"
       return 1
     fi
   done
@@ -103,6 +150,9 @@ rehybird_validate_package_tree() {
     return 1
   }
 
+  rehybird_validate_no_links_or_special_files "$root" || return 1
+  rehybird_validate_top_level "$root" || return 1
+
   for required in \
     module.prop \
     config.toml \
@@ -119,6 +169,7 @@ rehybird_validate_package_tree() {
     binaries/hybrid-mount; do
     rehybird_require_file "$root" "$required" || return 1
   done
+  rehybird_validate_binary_directory "$root" || return 1
 
   module_id="$(rehybird_single_property "$root/module.prop" id)" || return 1
   [ "$module_id" = hybrid_mount ] || {
