@@ -154,18 +154,25 @@ pub(super) fn first_blocked_critical_path(
                 .file_type()
                 .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
 
+            let critical_replace = is_critical_replace_marker(&normalized_path);
+            let partition_root_non_dir =
+                is_partition_root(&normalized_path) && !file_type.is_dir();
             let blocked = is_critical_payload_path(&normalized_path)
-                || is_critical_replace_marker(&normalized_path)
-                || (is_partition_root(&normalized_path) && !file_type.is_dir());
+                || critical_replace
+                || partition_root_non_dir;
             if blocked {
-                let ignored = matches!(rules.effective_mode(&relative_path), MountMode::Ignore)
-                    || (normalized_path != relative_path
-                        && matches!(rules.effective_mode(&normalized_path), MountMode::Ignore));
-                if ignored {
+                if blocked_entry_is_covered_by_ignore(
+                    rules,
+                    &relative_path,
+                    &normalized_path,
+                    file_type.is_dir(),
+                    critical_replace,
+                    partition_root_non_dir,
+                ) {
                     crate::scoped_log!(
                         warn,
                         "inventory:safety",
-                        "critical payload ignored by explicit rule: path={}",
+                        "critical subtree excluded by an effective Ignore rule: path={}",
                         relative_path.display()
                     );
                     continue;
@@ -180,6 +187,53 @@ pub(super) fn first_blocked_critical_path(
     }
 
     Ok(None)
+}
+
+fn blocked_entry_is_covered_by_ignore(
+    rules: &ModuleRules,
+    relative_path: &Path,
+    normalized_path: &Path,
+    is_directory: bool,
+    is_replace_marker: bool,
+    is_partition_root_non_dir: bool,
+) -> bool {
+    if is_partition_root_non_dir {
+        return false;
+    }
+
+    let relative_rule_path = if is_directory && !is_replace_marker {
+        relative_path
+    } else {
+        let Some(parent) = relative_path.parent() else {
+            return false;
+        };
+        parent
+    };
+    if relative_rule_path.as_os_str().is_empty() {
+        return false;
+    }
+
+    if matches!(
+        rules.effective_mode(relative_rule_path),
+        MountMode::Ignore
+    ) {
+        return true;
+    }
+
+    let normalized_rule_path = if is_directory && !is_replace_marker {
+        normalized_path
+    } else {
+        let Some(parent) = normalized_path.parent() else {
+            return false;
+        };
+        parent
+    };
+    normalized_rule_path != relative_rule_path
+        && !normalized_rule_path.as_os_str().is_empty()
+        && matches!(
+            rules.effective_mode(normalized_rule_path),
+            MountMode::Ignore
+        )
 }
 
 fn normalize_partition_alias(path: &Path) -> PathBuf {
@@ -282,6 +336,14 @@ mod tests {
         }
     }
 
+    fn rules_with_ignore(path: &str) -> ModuleRules {
+        let mut rules = empty_rules();
+        rules
+            .paths
+            .insert(path.to_string(), MountMode::Ignore);
+        rules
+    }
+
     #[test]
     fn recognizes_firmware_radio_and_vendor_control_roots() {
         for path in [
@@ -361,14 +423,14 @@ mod tests {
     }
 
     #[test]
-    fn blocks_partition_root_symlink_without_following_it() {
+    fn blocks_partition_root_symlink_even_when_root_rule_is_ignore() {
         let temp = TempDir::new().unwrap();
         let module = temp.path().join("module");
         fs::create_dir_all(&module).unwrap();
         symlink("/outside/vendor", module.join("vendor")).unwrap();
 
         assert_eq!(
-            first_blocked_critical_path(&module, &empty_rules()).unwrap(),
+            first_blocked_critical_path(&module, &rules_with_ignore("vendor")).unwrap(),
             Some(PathBuf::from("vendor"))
         );
     }
@@ -387,7 +449,45 @@ mod tests {
     }
 
     #[test]
-    fn explicit_ignore_rule_allows_safe_remainder_of_module() {
+    fn replace_marker_requires_parent_directory_ignore() {
+        let temp = TempDir::new().unwrap();
+        let module = temp.path().join("module");
+        fs::create_dir_all(module.join("vendor")).unwrap();
+        fs::write(module.join("vendor/.replace"), b"").unwrap();
+
+        assert_eq!(
+            first_blocked_critical_path(&module, &rules_with_ignore("vendor/.replace")).unwrap(),
+            Some(PathBuf::from("vendor/.replace"))
+        );
+        assert_eq!(
+            first_blocked_critical_path(&module, &rules_with_ignore("vendor")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn sensitive_file_requires_parent_directory_ignore() {
+        let temp = TempDir::new().unwrap();
+        let module = temp.path().join("module");
+        fs::create_dir_all(module.join("vendor/lib64")).unwrap();
+        fs::write(module.join("vendor/lib64/libbt-vendor.so"), b"blocked").unwrap();
+
+        assert_eq!(
+            first_blocked_critical_path(
+                &module,
+                &rules_with_ignore("vendor/lib64/libbt-vendor.so")
+            )
+            .unwrap(),
+            Some(PathBuf::from("vendor/lib64/libbt-vendor.so"))
+        );
+        assert_eq!(
+            first_blocked_critical_path(&module, &rules_with_ignore("vendor/lib64")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_directory_ignore_allows_safe_remainder_of_module() {
         let temp = TempDir::new().unwrap();
         let module = temp.path().join("module");
         fs::create_dir_all(module.join("vendor/firmware")).unwrap();
@@ -395,26 +495,26 @@ mod tests {
         fs::create_dir_all(module.join("system/app")).unwrap();
         fs::write(module.join("system/app/example.apk"), b"allowed").unwrap();
 
-        let mut rules = empty_rules();
-        rules
-            .paths
-            .insert("vendor/firmware".to_string(), MountMode::Ignore);
-
-        assert_eq!(first_blocked_critical_path(&module, &rules).unwrap(), None);
+        assert_eq!(
+            first_blocked_critical_path(&module, &rules_with_ignore("vendor/firmware")).unwrap(),
+            None
+        );
     }
 
     #[test]
-    fn partition_alias_ignore_rule_is_honored() {
+    fn partition_alias_directory_ignore_is_honored() {
         let temp = TempDir::new().unwrap();
         let module = temp.path().join("module");
         fs::create_dir_all(module.join("system/vendor/firmware")).unwrap();
         fs::write(module.join("system/vendor/firmware/modem.mbn"), b"blocked").unwrap();
 
-        let mut rules = empty_rules();
-        rules
-            .paths
-            .insert("system/vendor/firmware".to_string(), MountMode::Ignore);
-
-        assert_eq!(first_blocked_critical_path(&module, &rules).unwrap(), None);
+        assert_eq!(
+            first_blocked_critical_path(
+                &module,
+                &rules_with_ignore("system/vendor/firmware")
+            )
+            .unwrap(),
+            None
+        );
     }
 }
