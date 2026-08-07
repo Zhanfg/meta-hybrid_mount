@@ -117,7 +117,8 @@ fn commit_user_hide_rules(previous: &[PathBuf], updated: &[PathBuf]) -> Result<(
     }
 
     if let Err(update_error) = kasumi_mount::apply_runtime_config(&config) {
-        if let Err(save_error) = save_user_hide_rules_to(Path::new(defs::USER_HIDE_RULES_FILE), previous)
+        if let Err(save_error) =
+            save_user_hide_rules_to(Path::new(defs::USER_HIDE_RULES_FILE), previous)
         {
             bail!(
                 "user hide runtime update failed and rule file rollback also failed: update={update_error:#}; save_rollback={save_error:#}"
@@ -264,7 +265,9 @@ mod tests {
     #[test]
     fn hide_paths_reject_radio_and_firmware_targets() {
         assert!(validate_hide_path(Path::new("/vendor/firmware/modem.mbn")).is_err());
-        assert!(validate_hide_path(Path::new("/system/vendor/etc/bluetooth/bt_vendor.conf")).is_err());
+        assert!(
+            validate_hide_path(Path::new("/system/vendor/etc/bluetooth/bt_vendor.conf")).is_err()
+        );
         assert!(validate_hide_path(Path::new("/vendor/lib64/libbt-vendor.so")).is_err());
         assert!(validate_hide_path(Path::new("/vendor/lib64/soundfx/libdolby.so")).is_ok());
     }
