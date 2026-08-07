@@ -43,6 +43,13 @@ fn rollback_newly_loaded_lkm(
 
 /// Apply live Kasumi configuration with rollback to the previous ownership boundary.
 pub fn apply_runtime_config(config: &Config) -> Result<bool> {
+    // Live configuration must pass the same target checks as persisted boot
+    // configuration before any Kasumi ioctl is issued. Disabled Kasumi stays
+    // recoverable because the central validator intentionally ignores dormant
+    // Kasumi-only fields while still validating always-active Custom Bind data.
+    crate::path_safety::validate_config_targets(config)
+        .context("refusing unsafe live runtime configuration")?;
+
     if !config.kasumi.enabled {
         let lkm_status = lkm::status(&config.kasumi)
             .context("Failed to inspect Kasumi LKM while disabling runtime configuration")?;
