@@ -97,8 +97,20 @@ wait_volume_key_or_timeout() {
 }
 
 module_has_managed_partitions() {
+  # Any system payload changes the live mounted view, even when it is an
+  # ordinary /system/app, /system/etc or /system/lib path. Such a module is not
+  # config-only and must never have its active directory replaced mid-boot.
+  if [ -e "$MODPATH/system" ] || [ -L "$MODPATH/system" ]; then
+    return 0
+  fi
+
   for partition in $MANAGED_PARTITIONS; do
-    if [ -d "$MODPATH/system/$partition" ] || [ -d "$MODPATH/$partition" ]; then
+    # "system" is handled above. For all other partition roots, treat files,
+    # directories, valid symlinks and broken symlinks as mount payloads.
+    if [ "$partition" = system ]; then
+      continue
+    fi
+    if [ -e "$MODPATH/$partition" ] || [ -L "$MODPATH/$partition" ]; then
       return 0
     fi
   done
@@ -289,7 +301,7 @@ metamodule_hot_install() {
     return
   fi
   if module_has_managed_partitions; then
-    ui_print "- Module changes managed partitions; hot install is blocked for safety"
+    ui_print "- Module contains mount payloads; hot install is blocked for safety"
     ui_print "- Update remains staged and will apply after reboot"
     return
   fi
