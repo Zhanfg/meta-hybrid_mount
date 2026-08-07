@@ -30,6 +30,7 @@ use crate::{
         runtime_finalization,
         storage::StorageHandle,
     },
+    defs,
     mount::rollback::MountTransaction,
     partitions,
 };
@@ -282,7 +283,11 @@ impl MountController<Executed> {
 }
 
 fn transaction_scope_roots(config: &Config, tempdir: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![tempdir.to_path_buf(), config.kasumi.mirror_path.clone()];
+    let mut roots = vec![
+        tempdir.to_path_buf(),
+        config.kasumi.mirror_path.clone(),
+        PathBuf::from(defs::RUN_DIR),
+    ];
     roots.extend(
         partitions::managed_partition_names()
             .into_iter()
