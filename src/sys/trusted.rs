@@ -3,12 +3,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(all(unix, feature = "kasumi"))]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(feature = "kasumi")]
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{File, OpenOptions},
     io::{Read, Take},
-    path::Path,
 };
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 
@@ -137,6 +140,7 @@ pub(crate) fn ensure_private_dir(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "kasumi")]
 pub(crate) fn open_private_regular(path: &Path, max_bytes: u64) -> Result<File> {
     validate_private_parent(path)?;
 
@@ -190,6 +194,7 @@ pub(crate) fn open_private_regular(path: &Path, max_bytes: u64) -> Result<File> 
     Ok(file)
 }
 
+#[cfg(feature = "kasumi")]
 pub(crate) fn read_private_text(path: &Path, max_bytes: u64) -> Result<String> {
     let file = open_private_regular(path, max_bytes)?;
     let mut content = String::new();
@@ -206,6 +211,7 @@ pub(crate) fn read_private_text(path: &Path, max_bytes: u64) -> Result<String> {
     Ok(content)
 }
 
+#[cfg(feature = "kasumi")]
 pub(crate) fn validate_private_regular(path: &Path, max_bytes: u64) -> Result<()> {
     let _ = open_private_regular(path, max_bytes)?;
     Ok(())
@@ -213,18 +219,18 @@ pub(crate) fn validate_private_regular(path: &Path, max_bytes: u64) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::symlink};
-
     use super::*;
 
     #[test]
     fn rejects_paths_outside_android_private_root() {
-        assert!(open_private_regular(Path::new("/tmp/file"), 1024).is_err());
         assert!(ensure_private_dir(Path::new("/tmp/run"), 0o700).is_err());
     }
 
+    #[cfg(all(unix, feature = "kasumi"))]
     #[test]
     fn private_file_reader_rejects_final_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
         let root = Path::new("/data/adb/rehybird-trusted-test");
         let _ = fs::remove_dir_all(root);
         fs::create_dir_all(root).unwrap();
