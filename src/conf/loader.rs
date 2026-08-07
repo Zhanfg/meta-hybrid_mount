@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Take},
@@ -9,8 +11,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 #[cfg(feature = "control-plane")]
 use crate::conf::cli::Cli;
