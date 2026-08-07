@@ -155,8 +155,7 @@ pub(super) fn first_blocked_critical_path(
                 .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
 
             let critical_replace = is_critical_replace_marker(&normalized_path);
-            let partition_root_non_dir =
-                is_partition_root(&normalized_path) && !file_type.is_dir();
+            let partition_root_non_dir = is_partition_root(&normalized_path) && !file_type.is_dir();
             let blocked = is_critical_payload_path(&normalized_path)
                 || critical_replace
                 || partition_root_non_dir;
@@ -213,10 +212,7 @@ fn blocked_entry_is_covered_by_ignore(
         return false;
     }
 
-    if matches!(
-        rules.effective_mode(relative_rule_path),
-        MountMode::Ignore
-    ) {
+    if matches!(rules.effective_mode(relative_rule_path), MountMode::Ignore) {
         return true;
     }
 
@@ -338,9 +334,7 @@ mod tests {
 
     fn rules_with_ignore(path: &str) -> ModuleRules {
         let mut rules = empty_rules();
-        rules
-            .paths
-            .insert(path.to_string(), MountMode::Ignore);
+        rules.paths.insert(path.to_string(), MountMode::Ignore);
         rules
     }
 
@@ -509,11 +503,8 @@ mod tests {
         fs::write(module.join("system/vendor/firmware/modem.mbn"), b"blocked").unwrap();
 
         assert_eq!(
-            first_blocked_critical_path(
-                &module,
-                &rules_with_ignore("system/vendor/firmware")
-            )
-            .unwrap(),
+            first_blocked_critical_path(&module, &rules_with_ignore("system/vendor/firmware"))
+                .unwrap(),
             None
         );
     }
