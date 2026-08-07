@@ -221,9 +221,12 @@ pub fn validate_config_targets(config: &crate::conf::schema::Config) -> Result<(
     }
     #[cfg(feature = "kasumi")]
     for rule in &config.kasumi.kstat_rules {
-        if !rule.target_pathname.as_os_str().is_empty() {
-            ensure_kasumi_target_allowed(&rule.target_pathname)?;
+        if rule.target_pathname.as_os_str().is_empty() {
+            bail!(
+                "stable Kasumi kstat rules require target_pathname so the target can be safety-audited"
+            );
         }
+        ensure_kasumi_target_allowed(&rule.target_pathname)?;
     }
     Ok(())
 }
@@ -301,5 +304,19 @@ mod tests {
             ensure_custom_bind_target_allowed(Path::new("/vendor/lib64/soundfx/libdolby.so"))
                 .is_ok()
         );
+    }
+
+    #[cfg(feature = "kasumi")]
+    #[test]
+    fn kstat_rules_require_auditable_paths() {
+        let mut config = crate::conf::schema::Config::default();
+        config.kasumi.kstat_rules.push(crate::conf::schema::KasumiKstatRuleConfig {
+            target_ino: 123,
+            ..crate::conf::schema::KasumiKstatRuleConfig::default()
+        });
+        assert!(validate_config_targets(&config).is_err());
+
+        config.kasumi.kstat_rules[0].target_pathname = "/system/app/Example/Example.apk".into();
+        assert!(validate_config_targets(&config).is_ok());
     }
 }
