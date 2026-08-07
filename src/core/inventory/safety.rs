@@ -84,9 +84,7 @@ pub(super) fn first_blocked_critical_path(
         for entry in entries {
             scanned_entries += 1;
             if scanned_entries > MAX_SCANNED_ENTRIES {
-                bail!(
-                    "module tree exceeds critical-path scan entry limit ({MAX_SCANNED_ENTRIES})"
-                );
+                bail!("module tree exceeds critical-path scan entry limit ({MAX_SCANNED_ENTRIES})");
             }
 
             let entry = entry.with_context(|| {
@@ -96,14 +94,9 @@ pub(super) fn first_blocked_critical_path(
             let normalized_path = normalize_partition_alias(&relative_path);
 
             if is_critical_payload_path(&normalized_path) {
-                let ignored = matches!(
-                    rules.effective_mode(&relative_path),
-                    MountMode::Ignore
-                ) || (normalized_path != relative_path
-                    && matches!(
-                        rules.effective_mode(&normalized_path),
-                        MountMode::Ignore
-                    ));
+                let ignored = matches!(rules.effective_mode(&relative_path), MountMode::Ignore)
+                    || (normalized_path != relative_path
+                        && matches!(rules.effective_mode(&normalized_path), MountMode::Ignore));
                 if ignored {
                     crate::scoped_log!(
                         warn,
@@ -259,10 +252,7 @@ mod tests {
             .paths
             .insert("vendor/firmware".to_string(), MountMode::Ignore);
 
-        assert_eq!(
-            first_blocked_critical_path(&module, &rules).unwrap(),
-            None
-        );
+        assert_eq!(first_blocked_critical_path(&module, &rules).unwrap(), None);
     }
 
     #[test]
@@ -270,21 +260,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let module = temp.path().join("module");
         fs::create_dir_all(module.join("system/vendor/firmware")).unwrap();
-        fs::write(
-            module.join("system/vendor/firmware/modem.mbn"),
-            b"blocked",
-        )
-        .unwrap();
+        fs::write(module.join("system/vendor/firmware/modem.mbn"), b"blocked").unwrap();
 
         let mut rules = empty_rules();
-        rules.paths.insert(
-            "system/vendor/firmware".to_string(),
-            MountMode::Ignore,
-        );
+        rules
+            .paths
+            .insert("system/vendor/firmware".to_string(), MountMode::Ignore);
 
-        assert_eq!(
-            first_blocked_critical_path(&module, &rules).unwrap(),
-            None
-        );
+        assert_eq!(first_blocked_critical_path(&module, &rules).unwrap(), None);
     }
 }
