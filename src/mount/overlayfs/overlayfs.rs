@@ -185,7 +185,9 @@ fn mount_overlayfs(
             bottom_chunk.len()
         );
 
-        if context.register_umount && let Err(error) = send_umountable(&staging_dir) {
+        if context.register_umount
+            && let Err(error) = send_umountable(&staging_dir)
+        {
             if let Err(cleanup_error) = cleanup_staging_mounts(&staging_dirs) {
                 bail!(
                     "failed to queue OverlayFS staging unmount and rollback failed: registration={error:#}; rollback={cleanup_error:#}"
@@ -286,14 +288,7 @@ fn mount_overlay_child(
     if lower_dirs.is_empty() {
         bail!("overlay child has no directory layers: {mount_point}");
     }
-    mount_overlayfs(
-        &lower_dirs,
-        stock_root,
-        None,
-        None,
-        mount_point,
-        context,
-    )?;
+    mount_overlayfs(&lower_dirs, stock_root, None, None, mount_point, context)?;
     if context.register_umount {
         send_umountable(mount_point)?;
     }
@@ -317,15 +312,8 @@ pub fn mount_overlay(
         let mount_seq = collect_child_mount_points(root_path)?;
         let mut context = OverlayMountContext::new(mount_source, register_umount);
 
-        mount_overlayfs(
-            module_roots,
-            root,
-            upperdir,
-            workdir,
-            root,
-            &mut context,
-        )
-        .context("mount overlayfs for root failed")?;
+        mount_overlayfs(module_roots, root, upperdir, workdir, root, &mut context)
+            .context("mount overlayfs for root failed")?;
 
         for mount_point in &mount_seq {
             let relative = mount_point.replacen(root, "", 1);
