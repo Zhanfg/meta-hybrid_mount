@@ -17,8 +17,15 @@ CONFIG_FILE="$BASE_DIR/config.toml"
 PID_FILE="$BASE_DIR/run/daemon.pid"
 SOCKET_FILE="$BASE_DIR/run/daemon.sock"
 BINARY="$MODDIR/hybrid-mount"
+SAFETY_LIB="$MODDIR/uninstall-safety.sh"
 
-if [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
+BASE_IS_SYMLINK=false
+if [ -L "$BASE_DIR" ]; then
+  BASE_IS_SYMLINK=true
+  echo "REHYBIRD: private data root is a symlink; skipping daemon and LKM commands" >&2
+fi
+
+if [ "$BASE_IS_SYMLINK" = false ] && [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
   # LKM unload is a daemon command. Run it before shutdown so the daemon can
   # clear Kasumi state, release its cached client FD, and delete only an LKM
   # covered by the current-boot ownership receipt. Lite and Nano reject this
@@ -49,6 +56,24 @@ if [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
   fi
 fi
 
-rm -rf "$BASE_DIR"
+if [ ! -r "$SAFETY_LIB" ]; then
+  echo "REHYBIRD: uninstall safety helper unavailable; preserving private data" >&2
+  exit 0
+fi
+# shellcheck source=module/uninstall-safety.sh
+. "$SAFETY_LIB"
+
+rehybird_remove_inactive_base "$BASE_DIR" /proc/self/mountinfo /proc/1/mountinfo
+cleanup_status=$?
+case "$cleanup_status" in
+0)
+  ;;
+10)
+  echo "REHYBIRD: active mounts still reference $BASE_DIR; cleanup deferred until after reboot" >&2
+  ;;
+*)
+  echo "REHYBIRD: private data cleanup failed with status $cleanup_status; data preserved when possible" >&2
+  ;;
+esac
 
 exit 0
