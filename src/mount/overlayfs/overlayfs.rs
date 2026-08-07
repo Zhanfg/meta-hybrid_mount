@@ -121,6 +121,7 @@ pub fn mount_overlayfs(
     dest: impl AsRef<Path>,
     mount_source: &str,
     register_umount: bool,
+    retained_staging_dirs: &mut Vec<PathBuf>,
 ) -> Result<()> {
     let mut current_layers: Vec<String> = lower_dirs.to_vec();
     current_layers.push(lowest.to_string());
@@ -197,6 +198,7 @@ pub fn mount_overlayfs(
         return Err(error);
     }
 
+    retained_staging_dirs.extend(staging_dirs);
     Ok(())
 }
 
@@ -239,6 +241,7 @@ fn mount_overlay_child(
     stock_root: &String,
     mount_source: &str,
     register_umount: bool,
+    retained_staging_dirs: &mut Vec<PathBuf>,
 ) -> Result<()> {
     if !module_roots
         .iter()
@@ -274,6 +277,7 @@ fn mount_overlay_child(
         mount_point,
         mount_source,
         register_umount,
+        retained_staging_dirs,
     )?;
     if register_umount {
         send_umountable(mount_point)?;
@@ -296,6 +300,7 @@ pub fn mount_overlay(
         let stock_root = ".";
         let root_path = Path::new(root);
         let mount_seq = collect_child_mount_points(root_path)?;
+        let mut retained_staging_dirs = Vec::new();
 
         mount_overlayfs(
             module_roots,
@@ -305,6 +310,7 @@ pub fn mount_overlay(
             root,
             mount_source,
             register_umount,
+            &mut retained_staging_dirs,
         )
         .context("mount overlayfs for root failed")?;
 
@@ -321,10 +327,26 @@ pub fn mount_overlay(
                 &stock_root,
                 mount_source,
                 register_umount,
+                &mut retained_staging_dirs,
             ) {
-                umount_dir(root).with_context(|| format!("failed to revert {root}"))?;
-                return Err(error)
-                    .with_context(|| format!("failed to mount overlay child {mount_point}"));
+                let mut cleanup_errors = Vec::new();
+                if let Err(cleanup_error) = umount_dir(root) {
+                    cleanup_errors.push(format!(
+                        "failed to revert root mount {root}: {cleanup_error:#}"
+                    ));
+                }
+                if let Err(cleanup_error) = cleanup_staging_mounts(&retained_staging_dirs) {
+                    cleanup_errors.push(format!("{cleanup_error:#}"));
+                }
+
+                if cleanup_errors.is_empty() {
+                    return Err(error)
+                        .with_context(|| format!("failed to mount overlay child {mount_point}"));
+                }
+                bail!(
+                    "failed to mount overlay child {mount_point} and rollback was incomplete: operation={error:#}; cleanup={}",
+                    cleanup_errors.join(" | ")
+                );
             }
         }
         Ok(())
