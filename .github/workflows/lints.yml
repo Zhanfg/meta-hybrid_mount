@@ -52,6 +52,8 @@ jobs:
           while IFS= read -r -d '' script; do
             sh -n "$script"
           done < <(find module -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
+      - name: Test metamodule safety helpers
+        run: bash scripts/test-metasafety.sh
       - name: Reject direct block-device writes
         run: bash scripts/check-no-block-device-writes.sh
       - name: Check Kasumi protocol 16/17 ABI
