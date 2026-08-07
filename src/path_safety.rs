@@ -175,6 +175,53 @@ pub fn ensure_kasumi_target_allowed(target: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn ensure_custom_bind_target_allowed(target: &Path) -> Result<()> {
+    if !target.is_absolute() {
+        bail!("custom bind target must be an absolute path: {}", target.display());
+    }
+    let normalized = crate::utils::normalize_path(target);
+    if normalized != target {
+        bail!(
+            "custom bind target must already be normalized: original={}, normalized={}",
+            target.display(),
+            normalized.display()
+        );
+    }
+    if target == Path::new("/")
+        || [
+            "/proc",
+            "/sys",
+            "/dev",
+            "/mnt",
+            "/storage",
+            "/data/adb",
+            "/apex",
+        ]
+        .into_iter()
+        .any(|root| target.starts_with(root))
+        || is_radio_critical_system_path(target)
+    {
+        bail!(
+            "custom bind target is inside a protected runtime or radio-critical path: {}",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
+pub fn validate_config_targets(config: &crate::conf::schema::Config) -> Result<()> {
+    for mount in &config.custom_mounts {
+        ensure_custom_bind_target_allowed(&mount.target)?;
+    }
+    #[cfg(feature = "kasumi")]
+    for rule in &config.kasumi.kstat_rules {
+        if !rule.target_pathname.as_os_str().is_empty() {
+            ensure_kasumi_target_allowed(&rule.target_pathname)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn deserialize_safe_kasumi_target<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
 where
     D: Deserializer<'de>,
@@ -232,5 +279,12 @@ mod tests {
         assert!(ensure_kasumi_target_allowed(Path::new("/")).is_err());
         assert!(ensure_kasumi_target_allowed(Path::new("vendor/etc/radio")).is_err());
         assert!(ensure_kasumi_target_allowed(Path::new("/system/../vendor/etc/radio")).is_err());
+    }
+
+    #[test]
+    fn custom_bind_policy_rejects_runtime_and_radio_targets() {
+        assert!(ensure_custom_bind_target_allowed(Path::new("/data/adb/modules/example")).is_err());
+        assert!(ensure_custom_bind_target_allowed(Path::new("/vendor/firmware/modem.mbn")).is_err());
+        assert!(ensure_custom_bind_target_allowed(Path::new("/vendor/lib64/soundfx/libdolby.so")).is_ok());
     }
 }
