@@ -331,3 +331,145 @@ mod tests {
         assert_eq!(cmd.mode, 2);
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod privileged_validation {
+    use std::{
+        collections::HashMap,
+        ffi::CStr,
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::Ordering,
+    };
+
+    use anyhow::{Context, Result, bail};
+    use procfs::process::Process;
+    use rustix::mount::{MountFlags, UnmountFlags, mount, unmount};
+
+    use super::PENDING;
+    use crate::{
+        core::inventory::Module,
+        domain::{ModuleRules, MountMode},
+        mount::magic_mount::{MagicMountOptions, magic_mount},
+    };
+
+    const PROBE_PATH: &str = "/system/etc/rehybird-upstream-sync.conf";
+
+    fn reset_pending(ksu_enabled: bool) -> Result<()> {
+        crate::utils::KSU.store(ksu_enabled, Ordering::Relaxed);
+        PENDING
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pending umount lock was poisoned"))?
+            .clear();
+        Ok(())
+    }
+
+    fn pending_targets() -> Result<Vec<PathBuf>> {
+        let mut targets = PENDING
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pending umount lock was poisoned"))?
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        targets.sort();
+        Ok(targets)
+    }
+
+    fn detach_if_mounted(path: &Path) {
+        let _ = unmount(path, UnmountFlags::DETACH);
+    }
+
+    fn cleanup_namespace() {
+        detach_if_mounted(Path::new(PROBE_PATH));
+        detach_if_mounted(Path::new("/system/etc"));
+        detach_if_mounted(Path::new("/system"));
+        let _ = fs::remove_dir_all("/system");
+        let _ = reset_pending(false);
+    }
+
+    fn run_privileged_validation() -> Result<()> {
+        if unsafe { libc::geteuid() } != 0 {
+            bail!("privileged mount validation must run as root inside a private mount namespace");
+        }
+
+        fs::create_dir_all("/system")?;
+        mount(
+            "rehybird-validation-system",
+            "/system",
+            "tmpfs",
+            MountFlags::empty(),
+            None::<&CStr>,
+        )
+        .context("failed to mount private /system tmpfs")?;
+        fs::create_dir_all("/system/etc")?;
+        crate::sys::fs::lsetfilecon("/system/etc", "u:object_r:system_file:s0")?;
+
+        let modules = tempfile::tempdir()?;
+        let module_path = modules.path().join("rehybird_validation");
+        let source_file = module_path.join("system/etc/rehybird-upstream-sync.conf");
+        fs::create_dir_all(source_file.parent().context("probe source has no parent")?)?;
+        fs::write(module_path.join("module.prop"), "id=rehybird_validation\n")?;
+        fs::write(&source_file, "upstream-sync-ok\n")?;
+
+        let workspace = tempfile::Builder::new()
+            .prefix("rehybird_magic_validation_")
+            .tempdir_in("/mnt")?;
+        let module = Module {
+            id: "rehybird_validation".to_string(),
+            source_path: module_path,
+            rules: ModuleRules {
+                default_mode: MountMode::Magic,
+                paths: HashMap::new(),
+            },
+        };
+        let managed_partitions = vec!["system".to_string()];
+
+        reset_pending(true)?;
+        let (mounted_ids, _) = magic_mount(
+            workspace.path(),
+            modules.path(),
+            MagicMountOptions {
+                mount_source: "rehybird-validation-workspace",
+                managed_partitions: &managed_partitions,
+            },
+            &[module],
+            true,
+        )?;
+
+        if mounted_ids != vec!["rehybird_validation".to_string()] {
+            bail!("unexpected mounted module set: {mounted_ids:?}");
+        }
+        let probe = fs::read_to_string(PROBE_PATH)?;
+        if probe != "upstream-sync-ok\n" {
+            bail!("mounted probe content mismatch: {probe:?}");
+        }
+
+        let pending = pending_targets()?;
+        if pending.iter().any(|path| path.starts_with("/mnt")) {
+            bail!("temporary /mnt target leaked into KernelSU registration set: {pending:?}");
+        }
+        if pending != vec![PathBuf::from("/system/etc")] {
+            bail!("unexpected final KernelSU registration set: {pending:?}");
+        }
+
+        let workspace_mounts = Process::myself()?
+            .mountinfo()?
+            .into_iter()
+            .filter(|entry| entry.mount_point.starts_with(workspace.path()))
+            .map(|entry| entry.mount_point)
+            .collect::<Vec<_>>();
+        if !workspace_mounts.is_empty() {
+            bail!("temporary Magic Mount workspace remained mounted: {workspace_mounts:?}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires root and a private Linux mount namespace"]
+    fn privileged_magic_mount_excludes_temporary_worktree_from_unmount_registration() {
+        let result = run_privileged_validation();
+        cleanup_namespace();
+        result.unwrap();
+    }
+}
