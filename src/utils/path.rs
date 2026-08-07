@@ -87,11 +87,11 @@ pub fn resolve_path_with_root(system_root: &Path, path: &Path) -> io::Result<Pat
             ),
         )
     })?;
-    let virtual_path = normalize_path(if path.is_absolute() {
-        path
+    let virtual_path = if path.is_absolute() {
+        normalize_path(path)
     } else {
-        &Path::new("/").join(path)
-    });
+        normalize_path(&Path::new("/").join(path))
+    };
     let relative = virtual_path.strip_prefix("/").map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -300,7 +300,7 @@ pub fn apply_kstat_rule(rule: &schema::KasumiKstatRuleConfig) -> Result<()> {
     })
 }
 
-fn apply_spoof_settings(config: &config::Config, features: i32) -> Result<()> {
+fn apply_spoof_settings(config: &config::Config) -> Result<()> {
     let has_uname_config = has_uname_spoof_config(config);
     let should_apply_uname =
         has_uname_config || matches!(config.kasumi.uname_mode, KasumiUnameMode::Global);
@@ -667,7 +667,7 @@ fn apply_compiled(
     }
 
     apply_runtime_switches(config, true, features)?;
-    apply_spoof_settings(config, features)?;
+    apply_spoof_settings(config)?;
 
     for rule in &plan.kasumi_add_rules {
         kasumi::add_rule(Path::new(&rule.target), &rule.source, rule.file_type)?;
