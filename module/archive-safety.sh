@@ -106,6 +106,8 @@ rehybird_extract_regular_archive() {
 rehybird_replace_module_tree() {
   staged_tree="$1"
   module_path="$2"
+  backup_path="${module_path}.rehybird-extract-backup.$$"
+  had_previous=false
 
   [ -d "$staged_tree" ] || return 1
   case "$module_path" in
@@ -114,8 +116,32 @@ rehybird_replace_module_tree() {
     return 1
     ;;
   esac
+  [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ] || {
+    rehybird_archive_error "stale extraction backup already exists: $backup_path"
+    return 1
+  }
 
-  rm -rf "$module_path" || return 1
-  mkdir -p "$module_path" || return 1
-  cp -af "$staged_tree/." "$module_path/" || return 1
+  if [ -e "$module_path" ] || [ -L "$module_path" ]; then
+    mv "$module_path" "$backup_path" || return 1
+    had_previous=true
+  fi
+
+  if mkdir -p "$module_path" && cp -af "$staged_tree/." "$module_path/"; then
+    if [ "$had_previous" = true ]; then
+      rm -rf "$backup_path" || {
+        rehybird_archive_error "installed tree is valid but backup cleanup failed: $backup_path"
+        return 2
+      }
+    fi
+    return 0
+  fi
+
+  rm -rf "$module_path" || true
+  if [ "$had_previous" = true ]; then
+    mv "$backup_path" "$module_path" || {
+      rehybird_archive_error "module tree replacement and rollback both failed"
+      return 3
+    }
+  fi
+  return 1
 }
