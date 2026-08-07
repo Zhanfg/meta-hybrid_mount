@@ -289,6 +289,19 @@ where
     Ok(path)
 }
 
+pub fn deserialize_safe_kasumi_file_type<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let file_type = i32::deserialize(deserializer)?;
+    if file_type == libc::DT_REG as i32 || file_type == libc::DT_LNK as i32 {
+        return Ok(file_type);
+    }
+    Err(D::Error::custom(format!(
+        "direct Kasumi ADD only accepts regular-file or symlink dirent types; got {file_type}"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +390,20 @@ mod tests {
             resolved_existing_target_or_ancestor(&target).unwrap(),
             Some(real.canonicalize().unwrap())
         );
+    }
+
+    #[test]
+    fn direct_kasumi_add_rejects_special_node_types() {
+        for file_type in [
+            libc::DT_BLK as i32,
+            libc::DT_CHR as i32,
+            libc::DT_FIFO as i32,
+            libc::DT_SOCK as i32,
+            libc::DT_DIR as i32,
+        ] {
+            let payload = serde_json::json!(file_type);
+            let result = deserialize_safe_kasumi_file_type(payload.into_deserializer());
+            assert!(result.is_err(), "file_type={file_type}");
+        }
     }
 }
