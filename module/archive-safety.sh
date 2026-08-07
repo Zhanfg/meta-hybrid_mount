@@ -103,21 +103,26 @@ rehybird_extract_regular_archive() {
   done <"$manifest"
 }
 
-rehybird_replace_module_tree() {
-  staged_tree="$1"
-  module_path="$2"
-  backup_path="${module_path}.rehybird-extract-backup.$$"
-  had_previous=false
-
-  [ -d "$staged_tree" ] || return 1
+rehybird_validate_module_path_target() {
+  module_path="$1"
   case "$module_path" in
   '' | / | /data | /data/adb | /data/adb/modules | /data/adb/modules_update)
-    rehybird_archive_error "refusing unsafe module path replacement: $module_path"
+    rehybird_archive_error "refusing unsafe module path: $module_path"
     return 1
     ;;
   esac
+}
+
+rehybird_stage_module_tree() {
+  staged_tree="$1"
+  module_path="$2"
+  backup_path="$3"
+  had_previous=false
+
+  [ -d "$staged_tree" ] || return 1
+  rehybird_validate_module_path_target "$module_path" || return 1
   [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ] || {
-    rehybird_archive_error "stale extraction backup already exists: $backup_path"
+    rehybird_archive_error "stale module backup already exists: $backup_path"
     return 1
   }
 
@@ -126,26 +131,33 @@ rehybird_replace_module_tree() {
     had_previous=true
   fi
 
-  if ! mkdir -p "$module_path" || ! cp -af "$staged_tree/." "$module_path/"; then
-    rm -rf "$module_path" || true
-    if [ "$had_previous" = true ]; then
-      mv "$backup_path" "$module_path" || {
-        rehybird_archive_error 'module tree replacement and rollback both failed'
-        return 3
-      }
-    fi
-    return 1
+  if mkdir -p "$module_path" && cp -af "$staged_tree/." "$module_path/"; then
+    return 0
   fi
 
-  if [ "$had_previous" = true ] && ! rm -rf "$backup_path"; then
-    rm -rf "$module_path" || true
-    if mv "$backup_path" "$module_path"; then
-      rehybird_archive_error 'backup cleanup failed; previous module tree was restored'
-      return 2
-    fi
-    rehybird_archive_error 'backup cleanup and rollback both failed'
-    return 3
+  rm -rf "$module_path" || true
+  if [ "$had_previous" = true ]; then
+    mv "$backup_path" "$module_path" || {
+      rehybird_archive_error 'module tree staging and rollback both failed'
+      return 3
+    }
   fi
+  return 1
+}
 
-  return 0
+rehybird_rollback_module_tree() {
+  module_path="$1"
+  backup_path="$2"
+
+  rehybird_validate_module_path_target "$module_path" || return 1
+  rm -rf "$module_path" || return 1
+  if [ -e "$backup_path" ] || [ -L "$backup_path" ]; then
+    mv "$backup_path" "$module_path" || return 1
+  fi
+}
+
+rehybird_commit_module_tree() {
+  backup_path="$1"
+  [ -e "$backup_path" ] || [ -L "$backup_path" ] || return 0
+  rm -rf "$backup_path"
 }
