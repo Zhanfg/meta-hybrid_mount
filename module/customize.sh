@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # shellcheck shell=sh disable=SC3043
 
+umask 077
+
 if [ -z "${APATCH:-}" ] && [ -z "${KSU:-}" ]; then
   abort "! unsupported root platform"
 fi
@@ -11,7 +13,18 @@ if [ -n "${KSU_LATE_LOAD:-}" ] && [ -n "${KSU:-}" ]; then
   abort "! unsupported late load mode"
 fi
 
-INSTALL_WORK_ROOT="${TMPDIR:-/data/local/tmp}/rehybird-install.$$"
+create_private_work_root() {
+  [ -d /data/local/tmp ] && [ ! -L /data/local/tmp ] || return 1
+  if command -v mktemp >/dev/null 2>&1; then
+    mktemp -d /data/local/tmp/rehybird-install.XXXXXX
+  elif command -v busybox >/dev/null 2>&1; then
+    busybox mktemp -d /data/local/tmp/rehybird-install.XXXXXX
+  else
+    return 1
+  fi
+}
+
+INSTALL_WORK_ROOT="$(create_private_work_root)" || abort "! Failed to create random private installation workspace"
 BOOTSTRAP_LISTING="$INSTALL_WORK_ROOT/archive.listing"
 ARCHIVE_HELPER="$INSTALL_WORK_ROOT/archive-safety.sh"
 ARCHIVE_MANIFEST="$INSTALL_WORK_ROOT/archive.manifest"
@@ -20,7 +33,8 @@ STAGED_TREE="$INSTALL_WORK_ROOT/staged"
 cleanup_install_work() {
   rm -rf "$INSTALL_WORK_ROOT"
 }
-trap cleanup_install_work 0 1 2 15
+trap cleanup_install_work 0
+trap 'cleanup_install_work; exit 1' 1 2 15
 
 bootstrap_validate_archive() {
   rm -f "$BOOTSTRAP_LISTING"
@@ -53,9 +67,6 @@ bootstrap_validate_archive() {
 ui_print "- Verifying archive CRC and bootstrap layout..."
 if ! unzip -t "$ZIPFILE" >/dev/null 2>&1; then
   abort "! Package CRC verification failed; refusing partial installation"
-fi
-if ! mkdir -p "$INSTALL_WORK_ROOT"; then
-  abort "! Failed to create private installation workspace"
 fi
 chmod 700 "$INSTALL_WORK_ROOT" 2>/dev/null || true
 if ! bootstrap_validate_archive; then
@@ -93,7 +104,7 @@ case "$replace_status" in
 0)
   ;;
 2)
-  ui_print "! Verified package installed, but old staging backup cleanup was deferred"
+  abort "! New package backup cleanup failed; previous module tree was restored"
   ;;
 3)
   abort "! Verified package installation and rollback both failed"
