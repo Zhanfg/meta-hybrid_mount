@@ -58,6 +58,8 @@ jobs:
         run: bash scripts/test-package-integrity.sh
       - name: Test boot failure fail-safe
         run: bash scripts/test-metamount-failsafe.sh
+      - name: Test uninstall backing-store safety
+        run: bash scripts/test-uninstall-safety.sh
       - name: Reject direct block-device writes
         run: bash scripts/check-no-block-device-writes.sh
       - name: Check Kasumi protocol 16/17 ABI
