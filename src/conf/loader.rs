@@ -111,6 +111,7 @@ fn load_main_config(path: &Path) -> Result<Config> {
     let mut config = toml::from_str::<Config>(&content)
         .with_context(|| format!("failed to parse config file {}", path.display()))?;
     config.sanitize_disabled_features();
+    // Boot and daemon loaders must enforce the same target policy as config writes.
     crate::path_safety::validate_config_targets(&config)
         .context("config contains a protected runtime or radio-critical target")?;
     Ok(config)
