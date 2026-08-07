@@ -4,17 +4,66 @@
 
 pub mod discovery;
 pub mod listing;
+mod safety;
 
 use std::fs;
 
 use anyhow::Result;
 #[cfg(not(feature = "control-plane"))]
 use anyhow::bail;
-pub use discovery::*;
+pub use discovery::{InventorySnapshot, InventorySummary, Module};
 
 #[cfg(not(feature = "control-plane"))]
 use crate::domain::MountMode;
 use crate::{conf::config::Config, defs, domain::ModuleRules};
+
+pub fn scan(config: &Config) -> Result<Vec<Module>> {
+    Ok(scan_snapshot(config)?.modules)
+}
+
+pub fn scan_snapshot(config: &Config) -> Result<InventorySnapshot> {
+    let mut snapshot = discovery::scan_snapshot(config)?;
+    let mut safe_modules = Vec::with_capacity(snapshot.modules.len());
+    let mut quarantined = 0usize;
+
+    for module in snapshot.modules {
+        match safety::first_blocked_critical_path(&module.source_path, &module.rules) {
+            Ok(None) => safe_modules.push(module),
+            Ok(Some(path)) => {
+                quarantined += 1;
+                crate::scoped_log!(
+                    error,
+                    "inventory:safety",
+                    "module quarantined: id={}, path={}, reason=critical_bluetooth_or_radio_payload; add an explicit Ignore rule for the path to mount the safe remainder",
+                    module.id,
+                    path.display()
+                );
+            }
+            Err(error) => {
+                quarantined += 1;
+                crate::scoped_log!(
+                    error,
+                    "inventory:safety",
+                    "module quarantined: id={}, reason=critical_path_scan_failed, error={:#}",
+                    module.id,
+                    error
+                );
+            }
+        }
+    }
+
+    if quarantined > 0 {
+        crate::scoped_log!(
+            warn,
+            "inventory:safety",
+            "critical payload quarantine complete: quarantined={}, active={}",
+            quarantined,
+            safe_modules.len()
+        );
+    }
+    snapshot.modules = safe_modules;
+    Ok(snapshot)
+}
 
 pub fn load_module_rules(config: &Config, module_id: &str) -> Result<ModuleRules> {
     let mut rules = ModuleRules {
@@ -184,5 +233,69 @@ mod tests {
             load_module_rules(&config, "module").unwrap().default_mode,
             MountMode::Magic
         );
+    }
+}
+
+#[cfg(test)]
+mod quarantine_tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::domain::MountMode;
+
+    fn create_module(root: &std::path::Path, id: &str) -> std::path::PathBuf {
+        let module = root.join(id);
+        fs::create_dir_all(&module).unwrap();
+        fs::write(module.join("module.prop"), format!("id={id}\n")).unwrap();
+        module
+    }
+
+    #[test]
+    fn scan_quarantines_only_the_module_with_critical_payload() {
+        let temp = TempDir::new().unwrap();
+        let safe = create_module(temp.path(), "safe");
+        fs::create_dir_all(safe.join("system/app")).unwrap();
+        fs::write(safe.join("system/app/example.apk"), b"safe").unwrap();
+
+        let critical = create_module(temp.path(), "critical");
+        fs::create_dir_all(critical.join("vendor/firmware")).unwrap();
+        fs::write(critical.join("vendor/firmware/modem.mbn"), b"blocked").unwrap();
+
+        let config = Config {
+            moduledir: temp.path().to_path_buf(),
+            ..Config::default()
+        };
+        let snapshot = scan_snapshot(&config).unwrap();
+
+        assert_eq!(snapshot.modules.len(), 1);
+        assert_eq!(snapshot.modules[0].id, "safe");
+    }
+
+    #[test]
+    fn scan_accepts_module_when_critical_subtree_is_explicitly_ignored() {
+        let temp = TempDir::new().unwrap();
+        let module = create_module(temp.path(), "critical");
+        fs::create_dir_all(module.join("vendor/firmware")).unwrap();
+        fs::write(module.join("vendor/firmware/modem.mbn"), b"ignored").unwrap();
+
+        let mut config = Config {
+            moduledir: temp.path().to_path_buf(),
+            ..Config::default()
+        };
+        config.rules.insert(
+            "critical".to_string(),
+            ModuleRules {
+                default_mode: MountMode::Overlay,
+                paths: [("vendor/firmware".to_string(), MountMode::Ignore)]
+                    .into_iter()
+                    .collect(),
+            },
+        );
+
+        let snapshot = scan_snapshot(&config).unwrap();
+        assert_eq!(snapshot.modules.len(), 1);
+        assert_eq!(snapshot.modules[0].id, "critical");
     }
 }
