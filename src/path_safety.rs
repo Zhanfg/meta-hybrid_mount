@@ -2,9 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Deserializer, de::Error as _};
 
 const CRITICAL_SYSTEM_TREES: &[&str] = &[
@@ -151,6 +154,32 @@ pub fn is_radio_critical_system_path(target: &Path) -> bool {
             .any(|identifier| text.contains(identifier))
 }
 
+fn resolved_existing_target_or_ancestor(target: &Path) -> Result<Option<PathBuf>> {
+    let mut cursor = target;
+    loop {
+        match fs::canonicalize(cursor) {
+            Ok(resolved) => return Ok(Some(resolved)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to resolve existing Kasumi target ancestor {}",
+                        cursor.display()
+                    )
+                });
+            }
+        }
+
+        let Some(parent) = cursor.parent() else {
+            return Ok(None);
+        };
+        if parent == cursor {
+            return Ok(None);
+        }
+        cursor = parent;
+    }
+}
+
 pub fn ensure_kasumi_target_allowed(target: &Path) -> Result<()> {
     if !target.is_absolute() {
         bail!(
@@ -173,6 +202,15 @@ pub fn ensure_kasumi_target_allowed(target: &Path) -> Result<()> {
         bail!(
             "Kasumi target is inside a protected radio/firmware/system-critical path: {}",
             target.display()
+        );
+    }
+    if let Some(resolved) = resolved_existing_target_or_ancestor(target)?
+        && is_radio_critical_system_path(&resolved)
+    {
+        bail!(
+            "Kasumi target resolves through a protected radio/firmware/system-critical path: {} -> {}",
+            target.display(),
+            resolved.display()
         );
     }
     Ok(())
@@ -321,5 +359,23 @@ mod tests {
 
         config.kasumi.kstat_rules[0].target_pathname = "/system/app/Example/Example.apk".into();
         assert!(validate_config_targets(&config).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolver_follows_existing_symlink_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        let link = temp.path().join("link");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+
+        let target = link.join("missing/leaf");
+        assert_eq!(
+            resolved_existing_target_or_ancestor(&target).unwrap(),
+            Some(real.canonicalize().unwrap())
+        );
     }
 }
