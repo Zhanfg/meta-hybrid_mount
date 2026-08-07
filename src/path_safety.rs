@@ -3,12 +3,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
+    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Deserializer, de::Error as _};
+
+const MAX_KASUMI_SOURCE_ENTRIES: usize = 100_000;
+const MAX_KASUMI_SOURCE_DEPTH: usize = 64;
 
 const CRITICAL_SYSTEM_TREES: &[&str] = &[
     "/system/etc/firmware",
@@ -269,6 +273,53 @@ pub fn validate_config_targets(config: &crate::conf::schema::Config) -> Result<(
     Ok(())
 }
 
+fn ensure_safe_kasumi_directory_source(path: &Path) -> Result<()> {
+    let root_metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect Kasumi directory source {}", path.display()))?;
+    if !root_metadata.file_type().is_dir() {
+        bail!(
+            "Kasumi directory source must be a real directory, not a symlink or special node: {}",
+            path.display()
+        );
+    }
+
+    let mut queue = VecDeque::from([(path.to_path_buf(), 0usize)]);
+    let mut scanned = 0usize;
+    while let Some((directory, depth)) = queue.pop_front() {
+        if depth > MAX_KASUMI_SOURCE_DEPTH {
+            bail!(
+                "Kasumi directory source exceeds maximum scan depth at {}",
+                directory.display()
+            );
+        }
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("failed to scan Kasumi directory source {}", directory.display()))?
+        {
+            scanned += 1;
+            if scanned > MAX_KASUMI_SOURCE_ENTRIES {
+                bail!(
+                    "Kasumi directory source exceeds maximum entry count ({MAX_KASUMI_SOURCE_ENTRIES})"
+                );
+            }
+            let entry = entry.with_context(|| {
+                format!("failed to enumerate Kasumi directory source {}", directory.display())
+            })?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect Kasumi source {}", entry.path().display()))?;
+            if file_type.is_dir() {
+                queue.push_back((entry.path(), depth + 1));
+            } else if !file_type.is_file() {
+                bail!(
+                    "Kasumi directory source contains a symlink or special node: {}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn deserialize_safe_kasumi_target<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
 where
     D: Deserializer<'de>,
@@ -324,14 +375,8 @@ where
     D: Deserializer<'de>,
 {
     let path = PathBuf::deserialize(deserializer)?;
-    let resolved = fs::canonicalize(&path).map_err(D::Error::custom)?;
-    if resolved.is_dir() {
-        return Ok(path);
-    }
-    Err(D::Error::custom(format!(
-        "Kasumi directory source is not a directory: {}",
-        path.display()
-    )))
+    ensure_safe_kasumi_directory_source(&path).map_err(D::Error::custom)?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -440,5 +485,20 @@ mod tests {
             let result = deserialize_safe_kasumi_file_type(payload.into_deserializer());
             assert!(result.is_err(), "file_type={file_type}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_source_rejects_symlinks_and_accepts_regular_tree() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("payload");
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/file"), b"ok").unwrap();
+        assert!(ensure_safe_kasumi_directory_source(&root).is_ok());
+
+        symlink("file", root.join("nested/link")).unwrap();
+        assert!(ensure_safe_kasumi_directory_source(&root).is_err());
     }
 }
