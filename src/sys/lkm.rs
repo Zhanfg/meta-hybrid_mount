@@ -483,8 +483,11 @@ pub fn status(config: &KasumiConfig) -> Result<LkmStatus> {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn load_module_via_finit(ko_path: &Path, params: &str) -> Result<()> {
-    let file = fs::File::open(ko_path)
-        .with_context(|| format!("failed to open module {}", ko_path.display()))?;
+    // Use the exact descriptor that passed O_NOFOLLOW/ownership/hard-link/size
+    // validation. Re-opening the pathname after validation would reintroduce a
+    // swap race between the trusted-file check and finit_module().
+    let file = crate::sys::trusted::open_private_regular(ko_path, MAX_LKM_BYTES)
+        .with_context(|| format!("failed to open trusted module {}", ko_path.display()))?;
     let params = CString::new(params).context("module params contain interior NUL")?;
 
     let ret = unsafe { libc::syscall(SYS_FINIT_MODULE_NUM, file.as_raw_fd(), params.as_ptr(), 0) };
@@ -601,7 +604,10 @@ fn cleanup_runtime_before_unload() -> Result<()> {
 }
 
 fn rollback_newly_loaded_module(primary_error: anyhow::Error) -> Result<()> {
-    let cleanup_error = cleanup_runtime_before_unload().err();
+    // No REHYBIRD rule/config transaction has been applied at this point. If
+    // the userspace protocol cannot be trusted, do not send feature cleanup
+    // ioctls through that protocol. The pinned Kasumi module's module_exit
+    // tears down syscall/proc/VFS/override hooks and clears its own stores.
     let release_error = kasumi::release_connection().err();
     let unload_error = unload_module_via_syscall(defs::KASUMI_LKM_MODULE_NAME).err();
     let receipt_error = if unload_error.is_none() {
@@ -611,10 +617,7 @@ fn rollback_newly_loaded_module(primary_error: anyhow::Error) -> Result<()> {
     };
 
     bail!(
-        "Kasumi LKM post-load transaction failed: primary={primary_error:#}; runtime_cleanup={}; release_connection={}; unload={}; receipt_cleanup={}; ownership_receipt_retained_if_unload_failed=true",
-        cleanup_error
-            .map(|error| format!("{error:#}"))
-            .unwrap_or_else(|| "ok".to_string()),
+        "Kasumi LKM post-load transaction failed: primary={primary_error:#}; cleanup_strategy=module_exit_only; release_connection={}; unload={}; receipt_cleanup={}; ownership_receipt_retained_if_unload_failed=true",
         release_error
             .map(|error| format!("{error:#}"))
             .unwrap_or_else(|| "ok".to_string()),
