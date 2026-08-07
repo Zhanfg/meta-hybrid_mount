@@ -56,6 +56,8 @@ jobs:
         run: bash scripts/test-archive-safety.sh
       - name: Test metamodule safety helpers
         run: bash scripts/test-metasafety.sh
+      - name: Test private data safety
+        run: bash scripts/test-private-data-safety.sh
       - name: Test package integrity validator
         run: bash scripts/test-package-integrity.sh
       - name: Test boot failure fail-safe
