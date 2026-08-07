@@ -295,6 +295,7 @@ impl MagicMount {
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         if self.umount
+            && !self.has_tmpfs
             && let Err(error) = send_umountable(target)
         {
             crate::scoped_log!(
