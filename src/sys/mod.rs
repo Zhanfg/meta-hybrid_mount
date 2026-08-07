@@ -10,3 +10,4 @@ pub(crate) mod kmi_guard;
 #[cfg(feature = "kasumi")]
 pub mod lkm;
 pub mod mount;
+pub(crate) mod trusted;
