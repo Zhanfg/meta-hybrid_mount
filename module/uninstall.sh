@@ -19,6 +19,12 @@ SOCKET_FILE="$BASE_DIR/run/daemon.sock"
 BINARY="$MODDIR/hybrid-mount"
 
 if [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
+  # LKM unload is a daemon command. Run it before shutdown so the daemon can
+  # clear Kasumi state, release its cached client FD, and delete only an LKM
+  # covered by the current-boot ownership receipt. Lite and Nano reject this
+  # command, so cleanup remains best-effort for those flavors.
+  "$BINARY" --config "$CONFIG_FILE" lkm unload >/dev/null 2>&1 || true
+
   if [ -S "$SOCKET_FILE" ] || [ -r "$PID_FILE" ]; then
     daemon_pid=""
     if [ -r "$PID_FILE" ]; then
@@ -39,11 +45,6 @@ if [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
       ;;
     esac
   fi
-
-  # Stop the daemon first so it releases its cached Kasumi client file
-  # descriptor. Full builds can then safely unload an LKM owned by this boot.
-  # Lite and Nano builds reject this subcommand, so keep it best-effort.
-  "$BINARY" --config "$CONFIG_FILE" lkm unload >/dev/null 2>&1 || true
 fi
 
 rm -rf "$BASE_DIR"
