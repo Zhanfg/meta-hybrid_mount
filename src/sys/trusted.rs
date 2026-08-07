@@ -14,7 +14,10 @@ use anyhow::{Context, Result, bail};
 
 fn require_private_path(path: &Path) -> Result<()> {
     if !path.is_absolute() || !path.starts_with("/data/adb") {
-        bail!("trusted runtime path must stay under /data/adb: {}", path.display());
+        bail!(
+            "trusted runtime path must stay under /data/adb: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -37,7 +40,10 @@ fn validate_private_parent(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(parent)
         .with_context(|| format!("failed to inspect trusted parent {}", parent.display()))?;
     if !metadata.file_type().is_dir() {
-        bail!("trusted parent is not a real directory: {}", parent.display());
+        bail!(
+            "trusted parent is not a real directory: {}",
+            parent.display()
+        );
     }
     #[cfg(unix)]
     {
@@ -62,21 +68,36 @@ pub(crate) fn ensure_private_dir(path: &Path, mode: u32) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_dir() {
-                bail!("trusted runtime directory is not a real directory: {}", path.display());
+                bail!(
+                    "trusted runtime directory is not a real directory: {}",
+                    path.display()
+                );
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(path)
-                .with_context(|| format!("failed to create trusted runtime directory {}", path.display()))?;
+            fs::create_dir(path).with_context(|| {
+                format!(
+                    "failed to create trusted runtime directory {}",
+                    path.display()
+                )
+            })?;
         }
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect trusted runtime directory {}", path.display()));
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect trusted runtime directory {}",
+                    path.display()
+                )
+            });
         }
     }
 
-    let canonical = fs::canonicalize(path)
-        .with_context(|| format!("failed to canonicalize trusted directory {}", path.display()))?;
+    let canonical = fs::canonicalize(path).with_context(|| {
+        format!(
+            "failed to canonicalize trusted directory {}",
+            path.display()
+        )
+    })?;
     if canonical != path {
         bail!(
             "trusted runtime directory resolves through a different path: {} -> {}",
@@ -90,10 +111,16 @@ pub(crate) fn ensure_private_dir(path: &Path, mode: u32) -> Result<()> {
         let metadata = fs::symlink_metadata(path)
             .with_context(|| format!("failed to inspect trusted directory {}", path.display()))?;
         if metadata.uid() != 0 {
-            bail!("trusted runtime directory is not owned by root: {}", path.display());
+            bail!(
+                "trusted runtime directory is not owned by root: {}",
+                path.display()
+            );
         }
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).with_context(|| {
-            format!("failed to secure trusted runtime directory {}", path.display())
+            format!(
+                "failed to secure trusted runtime directory {}",
+                path.display()
+            )
         })?;
         let secured = fs::symlink_metadata(path)
             .with_context(|| format!("failed to re-check trusted directory {}", path.display()))?;
@@ -124,7 +151,10 @@ pub(crate) fn open_private_regular(path: &Path, max_bytes: u64) -> Result<File> 
         .metadata()
         .with_context(|| format!("failed to inspect trusted private file {}", path.display()))?;
     if !metadata.file_type().is_file() {
-        bail!("trusted private path is not a regular file: {}", path.display());
+        bail!(
+            "trusted private path is not a regular file: {}",
+            path.display()
+        );
     }
     if metadata.len() > max_bytes {
         bail!(
@@ -137,7 +167,10 @@ pub(crate) fn open_private_regular(path: &Path, max_bytes: u64) -> Result<File> 
     #[cfg(unix)]
     {
         if metadata.uid() != 0 {
-            bail!("trusted private file is not owned by root: {}", path.display());
+            bail!(
+                "trusted private file is not owned by root: {}",
+                path.display()
+            );
         }
         if metadata.mode() & 0o022 != 0 {
             bail!(
@@ -165,7 +198,10 @@ pub(crate) fn read_private_text(path: &Path, max_bytes: u64) -> Result<String> {
         .read_to_string(&mut content)
         .with_context(|| format!("failed to read trusted UTF-8 file {}", path.display()))?;
     if content.len() as u64 > max_bytes {
-        bail!("trusted private file grew beyond size limit: {}", path.display());
+        bail!(
+            "trusted private file grew beyond size limit: {}",
+            path.display()
+        );
     }
     Ok(content)
 }
