@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           runtime = Path("src/mount/kasumi/runtime.rs")
@@ -52,19 +53,22 @@ jobs:
 
           path_rs = Path("src/utils/path.rs")
           text = path_rs.read_text()
-          old = '''    let virtual_path = normalize_path(if path.is_absolute() {
-              path
-          } else {
-              &Path::new("/").join(path)
-          });'''
-          new = '''    let virtual_path = if path.is_absolute() {
+          pattern = re.compile(
+              r'    let virtual_path = normalize_path\(if path\.is_absolute\(\) \{\n'
+              r'\s+path\n'
+              r'\s+\} else \{\n'
+              r'\s+&Path::new\("/"\)\.join\(path\)\n'
+              r'\s+\}\);'
+          )
+          replacement = '''    let virtual_path = if path.is_absolute() {
               normalize_path(path)
           } else {
               normalize_path(&Path::new("/").join(path))
           };'''
-          if text.count(old) != 1:
-              raise SystemExit(f"unexpected path replacement count: {text.count(old)}")
-          path_rs.write_text(text.replace(old, new))
+          text, count = pattern.subn(replacement, text)
+          if count != 1:
+              raise SystemExit(f"unexpected path replacement count: {count}")
+          path_rs.write_text(text)
           PY
           cargo fmt --all
           git diff --check
