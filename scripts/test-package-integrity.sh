@@ -17,6 +17,7 @@ create_common_tree() {
   mkdir -p "$root/binaries"
   printf 'id=hybrid_mount\nname=%s\nversion=4.2.0-9999\nversionCode=1999999999\nmetamodule=1\n' \
     "$module_name" >"$root/module.prop"
+  cp module/archive-safety.sh "$root/archive-safety.sh"
   cp module/config.toml "$root/config.toml"
   cp module/module_blacklist.toml "$root/module_blacklist.toml"
   cp module/customize.sh "$root/customize.sh"
@@ -118,10 +119,25 @@ cp -a "$lite" "$missing_validator"
 rm "$missing_validator/package-integrity.sh"
 expect_invalid "$missing_validator" 'missing installed validator'
 
+missing_archive_guard="$temp_dir/missing-archive-guard"
+cp -a "$lite" "$missing_archive_guard"
+rm "$missing_archive_guard/archive-safety.sh"
+expect_invalid "$missing_archive_guard" 'missing archive safety helper'
+
 missing_uninstall_guard="$temp_dir/missing-uninstall-guard"
 cp -a "$lite" "$missing_uninstall_guard"
 rm "$missing_uninstall_guard/uninstall-safety.sh"
 expect_invalid "$missing_uninstall_guard" 'missing uninstall safety helper'
+
+unexpected_payload="$temp_dir/unexpected-payload"
+cp -a "$lite" "$unexpected_payload"
+printf 'unexpected\n' >"$unexpected_payload/payload.bin"
+expect_invalid "$unexpected_payload" 'unexpected top-level payload'
+
+symlink_payload="$temp_dir/symlink-payload"
+cp -a "$lite" "$symlink_payload"
+ln -s module.prop "$symlink_payload/linked.prop"
+expect_invalid "$symlink_payload" 'symbolic link payload'
 
 bad_shell="$temp_dir/bad-shell"
 cp -a "$lite" "$bad_shell"
