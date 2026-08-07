@@ -70,6 +70,14 @@ impl Drop for KasumiLkmBootGuard {
     }
 }
 
+#[cfg(feature = "kasumi")]
+fn kasumi_runtime_is_trusted(status: &sys::lkm::LkmStatus) -> bool {
+    // A protocol-compatible runtime with no /proc/modules entry is treated as
+    // an integrated-kernel implementation. A loadable module must instead have
+    // a valid current-boot ownership receipt written after REHYBIRD loaded it.
+    !status.loaded || status.managed
+}
+
 #[cfg(feature = "control-plane")]
 pub fn run(cli: &Cli) -> Result<()> {
     run_mount(cli).map(|_| ())
@@ -140,7 +148,29 @@ where
 
                 match sys::kasumi::check_status() {
                     Ok(sys::kasumi::KasumiStatus::Available) => {
-                        kasumi_ready = true;
+                        match sys::lkm::status(&config.kasumi) {
+                            Ok(lkm_status) if kasumi_runtime_is_trusted(&lkm_status) => {
+                                kasumi_ready = true;
+                            }
+                            Ok(lkm_status) => {
+                                crate::scoped_log!(
+                                    warn,
+                                    "startup",
+                                    "Kasumi loadable module is protocol-compatible but unmanaged; refusing use without unloading it: module={}, managed={}, current_kmi={}",
+                                    lkm_status.module_name.as_deref().unwrap_or("<unknown>"),
+                                    lkm_status.managed,
+                                    lkm_status.current_kmi
+                                );
+                            }
+                            Err(error) => {
+                                crate::scoped_log!(
+                                    warn,
+                                    "startup",
+                                    "Kasumi runtime ownership verification failed; refusing use: error={:#}",
+                                    error
+                                );
+                            }
+                        }
                     }
                     Ok(status) => {
                         crate::scoped_log!(
@@ -211,4 +241,42 @@ where
     lkm_guard.disarm();
 
     Ok(config)
+}
+
+#[cfg(all(test, feature = "kasumi"))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::kasumi_runtime_is_trusted;
+    use crate::sys::lkm::LkmStatus;
+
+    fn status(loaded: bool, managed: bool) -> LkmStatus {
+        LkmStatus {
+            loaded,
+            managed,
+            module_name: loaded.then(|| "kasumi_lkm".to_string()),
+            autoload: true,
+            kmi_override: String::new(),
+            current_kmi: "android15-6.6".to_string(),
+            search_dir: PathBuf::from("/data/adb/modules/hybrid_mount/kasumi_lkm"),
+            module_file: PathBuf::from(
+                "/data/adb/modules/hybrid_mount/kasumi_lkm/android15-6.6_arm64_kasumi_lkm.ko",
+            ),
+        }
+    }
+
+    #[test]
+    fn integrated_runtime_without_loadable_module_is_trusted() {
+        assert!(kasumi_runtime_is_trusted(&status(false, false)));
+    }
+
+    #[test]
+    fn current_boot_managed_loadable_module_is_trusted() {
+        assert!(kasumi_runtime_is_trusted(&status(true, true)));
+    }
+
+    #[test]
+    fn externally_loaded_module_without_receipt_is_rejected() {
+        assert!(!kasumi_runtime_is_trusted(&status(true, false)));
+    }
 }
