@@ -256,7 +256,10 @@ pub fn ensure_kasumi_mirror_path_allowed(path: &Path) -> Result<PathBuf> {
             );
         }
         let resolved = fs::canonicalize(&normalized).with_context(|| {
-            format!("failed to resolve Kasumi mirror_path {}", normalized.display())
+            format!(
+                "failed to resolve Kasumi mirror_path {}",
+                normalized.display()
+            )
         })?;
         if resolved != normalized {
             bail!(
@@ -327,8 +330,12 @@ pub fn validate_config_targets(config: &crate::conf::schema::Config) -> Result<(
 }
 
 fn ensure_safe_kasumi_directory_source(path: &Path) -> Result<()> {
-    let root_metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect Kasumi directory source {}", path.display()))?;
+    let root_metadata = fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "failed to inspect Kasumi directory source {}",
+            path.display()
+        )
+    })?;
     if !root_metadata.file_type().is_dir() {
         bail!(
             "Kasumi directory source must be a real directory, not a symlink or special node: {}",
@@ -345,9 +352,12 @@ fn ensure_safe_kasumi_directory_source(path: &Path) -> Result<()> {
                 directory.display()
             );
         }
-        for entry in fs::read_dir(&directory)
-            .with_context(|| format!("failed to scan Kasumi directory source {}", directory.display()))?
-        {
+        for entry in fs::read_dir(&directory).with_context(|| {
+            format!(
+                "failed to scan Kasumi directory source {}",
+                directory.display()
+            )
+        })? {
             scanned += 1;
             if scanned > MAX_KASUMI_SOURCE_ENTRIES {
                 bail!(
@@ -355,11 +365,14 @@ fn ensure_safe_kasumi_directory_source(path: &Path) -> Result<()> {
                 );
             }
             let entry = entry.with_context(|| {
-                format!("failed to enumerate Kasumi directory source {}", directory.display())
+                format!(
+                    "failed to enumerate Kasumi directory source {}",
+                    directory.display()
+                )
             })?;
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to inspect Kasumi source {}", entry.path().display()))?;
+            let file_type = entry.file_type().with_context(|| {
+                format!("failed to inspect Kasumi source {}", entry.path().display())
+            })?;
             if file_type.is_dir() {
                 queue.push_back((entry.path(), depth + 1));
             } else if !file_type.is_file() {
