@@ -26,6 +26,18 @@ use crate::{
     },
 };
 
+const MAX_LKM_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OWNER_RECEIPT_BYTES: u64 = 16 * 1024;
+const SUPPORTED_KMIS: &[&str] = &[
+    "android12-5.10",
+    "android13-5.10",
+    "android13-5.15",
+    "android14-5.15",
+    "android14-6.1",
+    "android15-6.6",
+    "android16-6.12",
+];
+
 #[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub struct LkmStatus {
     pub loaded: bool,
@@ -98,6 +110,8 @@ fn cached_managed_session() -> Result<Option<ManagedLkmSession>> {
 }
 
 fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
+    crate::sys::trusted::ensure_private_dir(Path::new(defs::RUN_DIR), 0o700)
+        .context("failed to validate private runtime directory before LKM ownership write")?;
     let payload = serde_json::to_vec_pretty(&session)
         .context("failed to serialize Kasumi LKM ownership receipt")?;
     crate::sys::fs::atomic_write(defs::KASUMI_LKM_OWNER_FILE, payload).with_context(|| {
@@ -106,11 +120,37 @@ fn record_managed_session(session: ManagedLkmSession) -> Result<()> {
             defs::KASUMI_LKM_OWNER_FILE
         )
     })?;
+    crate::sys::trusted::validate_private_regular(
+        Path::new(defs::KASUMI_LKM_OWNER_FILE),
+        MAX_OWNER_RECEIPT_BYTES,
+    )
+    .context("persisted Kasumi LKM ownership receipt failed trusted-file validation")?;
     *managed_session()
         .lock()
         .map_err(|_| anyhow::anyhow!("managed Kasumi LKM session lock is poisoned"))? =
         Some(session);
     Ok(())
+}
+
+fn preflight_managed_receipt_storage() -> Result<()> {
+    crate::sys::trusted::ensure_private_dir(Path::new(defs::RUN_DIR), 0o700)
+        .context("failed to validate private runtime directory before LKM load")?;
+    let probe = Path::new(defs::RUN_DIR).join(format!(
+        ".kasumi_lkm_owner.preflight.{}",
+        std::process::id()
+    ));
+    let result = (|| -> Result<()> {
+        crate::sys::fs::atomic_write(&probe, b"rehybird-lkm-owner-preflight")
+            .context("failed to create Kasumi ownership preflight file")?;
+        crate::sys::trusted::validate_private_regular(&probe, 1024)
+            .context("Kasumi ownership preflight file failed trusted-file validation")?;
+        fs::remove_file(&probe).context("failed to remove Kasumi ownership preflight file")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&probe);
+    }
+    result
 }
 
 fn clear_managed_session() -> Result<()> {
@@ -132,6 +172,7 @@ fn session_manages_loaded_module(
                 && session.module_name == defs::KASUMI_LKM_MODULE_NAME
                 && session.module_name == loaded
                 && session.module_file.is_absolute()
+                && session.module_file.starts_with(defs::KASUMI_LKM_DIR)
     )
 }
 
@@ -162,17 +203,33 @@ fn load_managed_session() -> Result<Option<ManagedLkmSession>> {
         clear_managed_session()?;
     }
 
-    let content = match fs::read_to_string(defs::KASUMI_LKM_OWNER_FILE) {
-        Ok(content) => content,
+    match fs::symlink_metadata(defs::KASUMI_LKM_OWNER_FILE) {
+        Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect Kasumi LKM ownership receipt {}",
+                    defs::KASUMI_LKM_OWNER_FILE
+                )
+            });
+        }
+    }
+
+    let content = match crate::sys::trusted::read_private_text(
+        Path::new(defs::KASUMI_LKM_OWNER_FILE),
+        MAX_OWNER_RECEIPT_BYTES,
+    ) {
+        Ok(content) => content,
         Err(error) => {
             crate::scoped_log!(
                 warn,
                 "lkm",
-                "ownership receipt unreadable; treating module as unmanaged: path={}, error={}",
+                "ownership receipt is not a trusted private file; treating module as unmanaged and removing only the receipt path: path={}, error={:#}",
                 defs::KASUMI_LKM_OWNER_FILE,
                 error
             );
+            remove_managed_receipt()?;
             return Ok(None);
         }
     };
@@ -195,6 +252,7 @@ fn load_managed_session() -> Result<Option<ManagedLkmSession>> {
     if session.boot_id != boot_id
         || session.module_name != defs::KASUMI_LKM_MODULE_NAME
         || !session.module_file.is_absolute()
+        || !session.module_file.starts_with(defs::KASUMI_LKM_DIR)
     {
         crate::scoped_log!(
             debug,
@@ -269,6 +327,17 @@ fn parse_kmi_from_release(release: &str) -> Result<String> {
         .map(|offset| dot1 + 1 + offset)
         .unwrap_or(full_version.len());
     let major_minor = &full_version[..dot2];
+    let mut version_parts = major_minor.split('.');
+    let major = version_parts.next().context("kernel release has no major version")?;
+    let minor = version_parts.next().context("kernel release has no minor version")?;
+    if version_parts.next().is_some()
+        || major.is_empty()
+        || minor.is_empty()
+        || !major.bytes().all(|byte| byte.is_ascii_digit())
+        || !minor.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("kernel release has an invalid major.minor version");
+    }
 
     let android_pos = full_version
         .find("-android")
@@ -280,10 +349,10 @@ fn parse_kmi_from_release(release: &str) -> Result<String> {
         .unwrap_or(full_version.len());
     let android_ver = &full_version[ver_start..ver_end];
 
-    if android_ver.is_empty() {
-        bail!("kernel release has an empty Android version");
+    if android_ver.is_empty() || !android_ver.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("kernel release has an invalid Android version");
     }
-    Ok(format!("android{}-{}", android_ver, major_minor))
+    Ok(format!("android{android_ver}-{major}.{minor}"))
 }
 
 fn real_kernel_release() -> Result<String> {
@@ -295,28 +364,67 @@ pub fn current_kmi() -> Result<String> {
 }
 
 fn effective_kmi(config: &KasumiConfig) -> Result<String> {
-    if !config.lkm_kmi_override.trim().is_empty() {
-        Ok(config.lkm_kmi_override.trim().to_string())
+    let kmi = if !config.lkm_kmi_override.trim().is_empty() {
+        crate::sys::kmi_guard::validate_override(config)?;
+        config.lkm_kmi_override.trim().to_string()
     } else {
-        current_kmi()
+        current_kmi()?
+    };
+
+    if !SUPPORTED_KMIS.contains(&kmi.as_str()) {
+        bail!("Kasumi KMI is not in the audited package target set: {kmi}");
     }
+    Ok(kmi)
 }
 
 fn resolve_module_file(config: &KasumiConfig) -> Result<PathBuf> {
-    if !config.lkm_dir.is_dir() {
+    if config.lkm_dir != Path::new(defs::KASUMI_LKM_DIR) {
         bail!(
-            "Kasumi LKM directory does not exist: {}",
+            "Kasumi LKM autoload directory must be the audited package directory: configured={}, required={}",
+            config.lkm_dir.display(),
+            defs::KASUMI_LKM_DIR
+        );
+    }
+
+    let dir_metadata = fs::symlink_metadata(&config.lkm_dir).with_context(|| {
+        format!(
+            "failed to inspect Kasumi LKM directory {}",
+            config.lkm_dir.display()
+        )
+    })?;
+    if !dir_metadata.file_type().is_dir() {
+        bail!(
+            "Kasumi LKM directory is not a real directory: {}",
             config.lkm_dir.display()
         );
     }
+    let canonical_dir = fs::canonicalize(&config.lkm_dir).with_context(|| {
+        format!(
+            "failed to canonicalize Kasumi LKM directory {}",
+            config.lkm_dir.display()
+        )
+    })?;
+    if canonical_dir != config.lkm_dir {
+        bail!(
+            "Kasumi LKM directory resolves through a different path: {} -> {}",
+            config.lkm_dir.display(),
+            canonical_dir.display()
+        );
+    }
+
     let kmi = effective_kmi(config)?;
     let path = config
         .lkm_dir
         .join(format!("{kmi}{}_kasumi_lkm.ko", arch_suffix()));
-    if !path.is_file() {
+    crate::sys::trusted::validate_private_regular(&path, MAX_LKM_BYTES)
+        .with_context(|| format!("Kasumi LKM file is not trusted: {}", path.display()))?;
+    let canonical_file = fs::canonicalize(&path)
+        .with_context(|| format!("failed to canonicalize Kasumi LKM file {}", path.display()))?;
+    if canonical_file != path {
         bail!(
-            "canonical Kasumi LKM file does not exist: {}",
-            path.display()
+            "Kasumi LKM file resolves through a different path: {} -> {}",
+            path.display(),
+            canonical_file.display()
         );
     }
     Ok(path)
@@ -488,6 +596,33 @@ fn cleanup_runtime_before_unload() -> Result<()> {
     Ok(())
 }
 
+fn rollback_newly_loaded_module(primary_error: anyhow::Error) -> Result<()> {
+    let cleanup_error = cleanup_runtime_before_unload().err();
+    let release_error = kasumi::release_connection().err();
+    let unload_error = unload_module_via_syscall(defs::KASUMI_LKM_MODULE_NAME).err();
+    let receipt_error = if unload_error.is_none() {
+        clear_managed_session().err()
+    } else {
+        None
+    };
+
+    bail!(
+        "Kasumi LKM post-load transaction failed: primary={primary_error:#}; runtime_cleanup={}; release_connection={}; unload={}; receipt_cleanup={}; ownership_receipt_retained_if_unload_failed=true",
+        cleanup_error
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_else(|| "ok".to_string()),
+        release_error
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_else(|| "ok".to_string()),
+        unload_error
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_else(|| "ok".to_string()),
+        receipt_error
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_else(|| "ok".to_string())
+    )
+}
+
 pub fn load(config: &KasumiConfig) -> Result<()> {
     if kasumi::can_operate()? {
         crate::scoped_log!(
@@ -506,54 +641,70 @@ pub fn load(config: &KasumiConfig) -> Result<()> {
         );
     }
 
+    // Everything that can be checked without changing kernel state must happen
+    // before finit_module(). This leaves the smallest possible post-load failure
+    // surface and ensures every successful load can be bound to this boot.
+    let boot_id = current_boot_id().context("failed to bind prospective LKM ownership to boot")?;
     let ko_path = resolve_module_file(config)?;
     let kmi = effective_kmi(config)?;
-
-    load_module_via_finit(&ko_path, "")?;
-    kasumi::invalidate_status_cache()?;
-
-    let module_name =
-        loaded_module_name()?.context("Kasumi LKM load returned without a module entry")?;
-    if module_name != defs::KASUMI_LKM_MODULE_NAME {
-        bail!(
-            "loaded unexpected Kasumi module name {module_name}; expected {}; refusing automatic unload because ownership cannot be proven",
-            defs::KASUMI_LKM_MODULE_NAME
-        );
-    }
-
-    if !kasumi::can_operate()? {
-        let status = kasumi::check_status()?;
-        let validation_error = anyhow::anyhow!(
-            "loaded Kasumi LKM failed protocol validation (status={})",
-            kasumi::status_name(status)
-        );
-        let _ = kasumi::release_connection();
-        return match unload_module_via_syscall(&module_name) {
-            Ok(()) => Err(validation_error.context("invalid LKM was unloaded")),
-            Err(unload_error) => bail!(
-                "Kasumi LKM validation and cleanup both failed: validation={validation_error:#}; unload={unload_error:#}"
-            ),
-        };
-    }
-
+    preflight_managed_receipt_storage()?;
     let session = ManagedLkmSession {
-        boot_id: current_boot_id().context("failed to bind LKM ownership to current boot")?,
-        module_name: module_name.clone(),
+        boot_id,
+        module_name: defs::KASUMI_LKM_MODULE_NAME.to_string(),
         module_file: ko_path.clone(),
     };
+
+    load_module_via_finit(&ko_path, "")?;
+
+    // Persist ownership immediately after the kernel accepts the module. Any
+    // later failure can then safely retain the receipt when delete_module fails.
     if let Err(record_error) = record_managed_session(session) {
-        let cleanup_error = cleanup_runtime_before_unload().err();
-        let _ = kasumi::release_connection();
-        let unload_error = unload_module_via_syscall(&module_name).err();
-        bail!(
-            "Kasumi LKM loaded but ownership registration failed: register={record_error:#}; cleanup={}; unload={}",
-            cleanup_error
-                .map(|error| format!("{error:#}"))
-                .unwrap_or_else(|| "ok".to_string()),
-            unload_error
-                .map(|error| format!("{error:#}"))
-                .unwrap_or_else(|| "ok".to_string())
+        return rollback_newly_loaded_module(
+            record_error.context("loaded Kasumi LKM but ownership registration failed"),
         );
+    }
+
+    if let Err(error) = kasumi::invalidate_status_cache() {
+        return rollback_newly_loaded_module(
+            error.context("failed to invalidate Kasumi status cache after LKM load"),
+        );
+    }
+
+    let module_name = match loaded_module_name() {
+        Ok(Some(module_name)) => module_name,
+        Ok(None) => {
+            return rollback_newly_loaded_module(anyhow::anyhow!(
+                "Kasumi LKM load returned without a module entry"
+            ));
+        }
+        Err(error) => {
+            return rollback_newly_loaded_module(
+                error.context("failed to verify /proc/modules after Kasumi LKM load"),
+            );
+        }
+    };
+    if module_name != defs::KASUMI_LKM_MODULE_NAME {
+        return rollback_newly_loaded_module(anyhow::anyhow!(
+            "loaded unexpected Kasumi module name {module_name}; expected {}",
+            defs::KASUMI_LKM_MODULE_NAME
+        ));
+    }
+
+    match kasumi::can_operate() {
+        Ok(true) => {}
+        Ok(false) => {
+            let status = kasumi::check_status()
+                .map(|status| kasumi::status_name(status).to_string())
+                .unwrap_or_else(|error| format!("status-query-error:{error:#}"));
+            return rollback_newly_loaded_module(anyhow::anyhow!(
+                "loaded Kasumi LKM failed protocol validation (status={status})"
+            ));
+        }
+        Err(error) => {
+            return rollback_newly_loaded_module(
+                error.context("Kasumi protocol operability check failed after LKM load"),
+            );
+        }
     }
 
     crate::scoped_log!(
@@ -639,8 +790,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ManagedLkmSession, loaded_module_name_from_proc_modules, parse_kmi_from_release,
-        session_manages_loaded_module,
+        ManagedLkmSession, SUPPORTED_KMIS, loaded_module_name_from_proc_modules,
+        parse_kmi_from_release, session_manages_loaded_module,
     };
 
     #[test]
@@ -656,6 +807,28 @@ mod tests {
         let error = parse_kmi_from_release("5.15.207-g3ddad1147e36").unwrap_err();
 
         assert!(error.to_string().contains("has no Android version"));
+    }
+
+    #[test]
+    fn rejects_non_numeric_gki_markers() {
+        assert!(parse_kmi_from_release("6.x.1-android15-8-g123").is_err());
+        assert!(parse_kmi_from_release("6.6.1-androidx-8-g123").is_err());
+    }
+
+    #[test]
+    fn audited_kmi_set_is_exact() {
+        assert_eq!(
+            SUPPORTED_KMIS,
+            [
+                "android12-5.10",
+                "android13-5.10",
+                "android13-5.15",
+                "android14-5.15",
+                "android14-6.1",
+                "android15-6.6",
+                "android16-6.12",
+            ]
+        );
     }
 
     #[test]
@@ -684,11 +857,13 @@ mod tests {
     }
 
     #[test]
-    fn ownership_requires_current_boot_canonical_module_and_absolute_file() {
+    fn ownership_requires_current_boot_canonical_module_and_packaged_file() {
         let session = ManagedLkmSession {
             boot_id: "boot-a".to_string(),
             module_name: "kasumi_lkm".to_string(),
-            module_file: PathBuf::from("/tmp/kasumi_lkm.ko"),
+            module_file: PathBuf::from(
+                "/data/adb/modules/hybrid_mount/kasumi_lkm/android15-6.6_arm64_kasumi_lkm.ko",
+            ),
         };
 
         assert!(session_manages_loaded_module(
@@ -712,12 +887,12 @@ mod tests {
             "boot-a"
         ));
 
-        let relative = ManagedLkmSession {
-            module_file: PathBuf::from("kasumi_lkm.ko"),
+        let outside_package = ManagedLkmSession {
+            module_file: PathBuf::from("/tmp/kasumi_lkm.ko"),
             ..session
         };
         assert!(!session_manages_loaded_module(
-            Some(&relative),
+            Some(&outside_package),
             Some("kasumi_lkm"),
             "boot-a"
         ));
