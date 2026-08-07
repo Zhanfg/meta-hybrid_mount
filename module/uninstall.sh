@@ -25,6 +25,8 @@ if [ -x "$BINARY" ] && [ -f "$CONFIG_FILE" ]; then
   # command, so cleanup remains best-effort for those flavors.
   "$BINARY" --config "$CONFIG_FILE" lkm unload >/dev/null 2>&1 || true
 
+  # Dispatch may have started the daemon when no socket existed, so read the
+  # authoritative PID only after the unload request has returned.
   if [ -S "$SOCKET_FILE" ] || [ -r "$PID_FILE" ]; then
     daemon_pid=""
     if [ -r "$PID_FILE" ]; then
