@@ -49,6 +49,7 @@ rehybird_validate_shell_scripts() {
     metasafety.sh \
     metauninstall.sh \
     package-integrity.sh \
+    uninstall-safety.sh \
     uninstall.sh; do
     sh -n "$root/$script" || {
       rehybird_integrity_error "shell syntax check failed: $script"
@@ -113,6 +114,7 @@ rehybird_validate_package_tree() {
     metauninstall.sh \
     package-integrity.sh \
     sepolicy.rule \
+    uninstall-safety.sh \
     uninstall.sh \
     binaries/hybrid-mount; do
     rehybird_require_file "$root" "$required" || return 1
