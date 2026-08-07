@@ -150,6 +150,13 @@ jobs:
           KO_FILE="${OUT}/${KMI}_${TARGET_ARCH}_kasumi_lkm.ko"
           test -s "$KO_FILE"
           ls -la "$KO_FILE"
+          command -v modinfo >/dev/null
+          MODULE_NAME="$(modinfo -F name "$KO_FILE")"
+          if [ "$MODULE_NAME" != "kasumi_lkm" ]; then
+            echo "Unexpected Kasumi kernel module identity: $MODULE_NAME"
+            exit 1
+          fi
+          echo "Verified kernel module identity: $MODULE_NAME"
 
       - name: Report cache hit
         if: steps.cache-lkm.outputs.cache-hit == 'true'
