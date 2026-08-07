@@ -11,45 +11,42 @@ if [ -n "${KSU_LATE_LOAD:-}" ] && [ -n "${KSU:-}" ]; then
   abort "! unsupported late load mode"
 fi
 
-validate_zip_paths() {
-  entry_list="${TMPDIR:-/data/local/tmp}/rehybird-zip-entries.$$"
-  rm -f "$entry_list"
-
-  if ! unzip -Z1 "$ZIPFILE" >"$entry_list" 2>/dev/null; then
-    if ! unzip -l "$ZIPFILE" 2>/dev/null | awk '
-      NR <= 3 { next }
-      /^[[:space:]]*-+[[:space:]]+-+/ { next }
-      {
-        line = $0
-        sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9-]+[[:space:]]+[0-9:]+[[:space:]]+/, "", line)
-        if (line != "") print line
-      }
-    ' >"$entry_list"; then
-      rm -f "$entry_list"
-      return 1
-    fi
+validate_zip_layout() {
+  listing="${TMPDIR:-/data/local/tmp}/rehybird-zip-listing.$$"
+  rm -f "$listing"
+  if ! unzip -l "$ZIPFILE" >"$listing" 2>/dev/null; then
+    rm -f "$listing"
+    return 1
   fi
 
-  unsafe=false
-  while IFS= read -r entry; do
-    case "$entry" in
-    /* | ../* | */../* | */.. | *\\*)
-      ui_print "! Unsafe archive entry: $entry"
-      unsafe=true
-      break
-      ;;
-    esac
-  done <"$entry_list"
-  rm -f "$entry_list"
-  [ "$unsafe" = false ]
+  awk -v max_file=33554432 -v max_total=100663296 -v max_entries=5000 '
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9-]+$/ && $3 ~ /^[0-9:]+$/ {
+      size = $1 + 0
+      line = $0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9-]+[[:space:]]+[0-9:]+[[:space:]]+/, "", line)
+      if (line == "") next
+
+      count++
+      total += size
+      if (size > max_file || total > max_total || count > max_entries) bad = 1
+      if (seen[line]++) bad = 1
+      if (line ~ /^\// || line ~ /^[A-Za-z]:/ || line ~ /(^|\/)\.\.(\/|$)/ || line ~ /\\/) bad = 1
+    }
+    END {
+      if (count == 0 || bad) exit 1
+    }
+  ' "$listing"
+  status=$?
+  rm -f "$listing"
+  return "$status"
 }
 
-ui_print "- Verifying archive CRC..."
+ui_print "- Verifying archive CRC and layout..."
 if ! unzip -t "$ZIPFILE" >/dev/null 2>&1; then
   abort "! Package CRC verification failed; refusing partial installation"
 fi
-if ! validate_zip_paths; then
-  abort "! Package contains an unsafe path"
+if ! validate_zip_layout; then
+  abort "! Package archive layout, size, or entry validation failed"
 fi
 if ! unzip -o "$ZIPFILE" -d "$MODPATH" >&2; then
   abort "! Package extraction failed; refusing partial installation"
