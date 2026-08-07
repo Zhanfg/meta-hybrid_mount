@@ -160,9 +160,11 @@ pub fn is_radio_critical_system_path(target: &Path) -> bool {
 
 fn resolved_existing_target_or_ancestor(target: &Path) -> Result<Option<PathBuf>> {
     let mut cursor = target;
+    let mut suffix = PathBuf::new();
+
     loop {
         match fs::canonicalize(cursor) {
-            Ok(resolved) => return Ok(Some(resolved)),
+            Ok(resolved) => return Ok(Some(resolved.join(&suffix))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error).with_context(|| {
@@ -173,6 +175,11 @@ fn resolved_existing_target_or_ancestor(target: &Path) -> Result<Option<PathBuf>
                 });
             }
         }
+
+        let Some(name) = cursor.file_name() else {
+            return Ok(None);
+        };
+        suffix = PathBuf::from(name).join(suffix);
 
         let Some(parent) = cursor.parent() else {
             return Ok(None);
@@ -538,7 +545,7 @@ mod tests {
         let target = link.join("missing/leaf");
         assert_eq!(
             resolved_existing_target_or_ancestor(&target).unwrap(),
-            Some(real.canonicalize().unwrap())
+            Some(real.canonicalize().unwrap().join("missing/leaf"))
         );
     }
 
