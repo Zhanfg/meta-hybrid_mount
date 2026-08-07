@@ -28,7 +28,7 @@ fn config_backup_path(path: &Path, index: Option<usize>) -> std::path::PathBuf {
         .map(|e| format!("{}.bak", e.to_string_lossy()))
         .unwrap_or_else(|| "bak".to_string());
     let ext = match index {
-        Some(index) => format!("{ext}.{index}"),
+        Some(index) => format!("{ext}.bak.{index}"),
         None => ext,
     };
     path.with_extension(ext)
@@ -167,10 +167,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config_path = temp.path().join("config.toml");
         let mut config = Config::default();
-        config.custom_mounts.push(crate::conf::schema::CustomBindMount {
-            source: "/data/local/tmp/source".into(),
-            target: "/vendor/firmware/modem.mbn".into(),
-        });
+        config
+            .custom_mounts
+            .push(crate::conf::schema::CustomBindMount {
+                source: "/data/local/tmp/source".into(),
+                target: "/vendor/firmware/modem.mbn".into(),
+            });
 
         assert!(config.save_to_file(&config_path).is_err());
         assert!(!config_path.exists());
@@ -182,10 +184,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config_path = temp.path().join("config.toml");
         let mut config = Config::default();
-        config.kasumi.kstat_rules.push(crate::conf::schema::KasumiKstatRuleConfig {
-            target_pathname: "/vendor/etc/radio/config.xml".into(),
-            ..crate::conf::schema::KasumiKstatRuleConfig::default()
-        });
+        config
+            .kasumi
+            .kstat_rules
+            .push(crate::conf::schema::KasumiKstatRuleConfig {
+                target_pathname: "/vendor/etc/radio/config.xml".into(),
+                ..crate::conf::schema::KasumiKstatRuleConfig::default()
+            });
 
         assert!(config.save_to_file(&config_path).is_err());
         assert!(!config_path.exists());
