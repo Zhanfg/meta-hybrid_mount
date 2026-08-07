@@ -59,7 +59,7 @@ rehybird_validate_top_level() {
     [ -e "$candidate" ] || [ -L "$candidate" ] || continue
     name="${candidate##*/}"
     case "$name" in
-    .nano | binaries | config.toml | customize.sh | kasumi_lkm | launcher.png | metainstall.sh | metamount.sh | metasafety.sh | metauninstall.sh | module.prop | module_blacklist.toml | package-integrity.sh | sepolicy.rule | uninstall-safety.sh | uninstall.sh | webroot)
+    .nano | archive-safety.sh | binaries | config.toml | customize.sh | kasumi_lkm | launcher.png | metainstall.sh | metamount.sh | metasafety.sh | metauninstall.sh | module.prop | module_blacklist.toml | package-integrity.sh | sepolicy.rule | uninstall-safety.sh | uninstall.sh | webroot)
       ;;
     *)
       rehybird_integrity_error "unexpected top-level package entry: $name"
@@ -90,6 +90,7 @@ rehybird_validate_binary_directory() {
 rehybird_validate_shell_scripts() {
   root="$1"
   for script in \
+    archive-safety.sh \
     customize.sh \
     metainstall.sh \
     metamount.sh \
@@ -155,6 +156,7 @@ rehybird_validate_package_tree() {
 
   for required in \
     module.prop \
+    archive-safety.sh \
     config.toml \
     module_blacklist.toml \
     customize.sh \
@@ -189,7 +191,7 @@ rehybird_validate_package_tree() {
     REHYBIRD_PACKAGE_FLAVOR=nano
     ;;
   *)
-    rehybird_integrity_error "unknown or unsigned package flavor name: $module_name"
+    rehybird_integrity_error "unknown package flavor name: $module_name"
     return 1
     ;;
   esac
