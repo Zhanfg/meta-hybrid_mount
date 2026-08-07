@@ -180,10 +180,11 @@ mod tests {
 
     #[cfg(feature = "kasumi")]
     #[test]
-    fn config_rejects_protected_kstat_targets() {
+    fn protected_kstat_targets_are_blocked_when_enabled_but_persistable_for_rescue_when_disabled() {
         let temp = tempfile::tempdir().unwrap();
         let config_path = temp.path().join("config.toml");
         let mut config = Config::default();
+        config.kasumi.enabled = true;
         config
             .kasumi
             .kstat_rules
@@ -194,6 +195,12 @@ mod tests {
 
         assert!(config.save_to_file(&config_path).is_err());
         assert!(!config_path.exists());
+
+        config.kasumi.enabled = false;
+        config.save_to_file(&config_path).unwrap();
+        let saved = fs::read_to_string(&config_path).unwrap();
+        assert!(saved.contains("enabled = false"));
+        assert!(saved.contains("/vendor/etc/radio/config.xml"));
     }
 
     #[cfg(not(feature = "kasumi"))]
