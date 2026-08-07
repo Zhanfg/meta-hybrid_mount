@@ -1,0 +1,79 @@
+name: Fix final review Clippy errors
+
+on:
+  push:
+    branches:
+      - 'review/final-candidate-1962'
+    paths:
+      - '.github/workflows/review-clippy-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact fixes
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          runtime = Path("src/mount/kasumi/runtime.rs")
+          text = runtime.read_text()
+          replacements = {
+              "fn apply_spoof_settings(config: &config::Config, features: i32) -> Result<()> {":
+                  "fn apply_spoof_settings(config: &config::Config) -> Result<()> {",
+              "    apply_spoof_settings(config, features)?;":
+                  "    apply_spoof_settings(config)?;",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"unexpected replacement count for {old!r}: {text.count(old)}")
+              text = text.replace(old, new)
+          runtime.write_text(text)
+
+          path_rs = Path("src/utils/path.rs")
+          text = path_rs.read_text()
+          old = '''    let virtual_path = normalize_path(if path.is_absolute() {
+              path
+          } else {
+              &Path::new("/").join(path)
+          });'''
+          new = '''    let virtual_path = if path.is_absolute() {
+              normalize_path(path)
+          } else {
+              normalize_path(&Path::new("/").join(path))
+          };'''
+          if text.count(old) != 1:
+              raise SystemExit(f"unexpected path replacement count: {text.count(old)}")
+          path_rs.write_text(text.replace(old, new))
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Commit fixes
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/mount/kasumi/runtime.rs src/utils/path.rs
+          git commit -m "fix: resolve final candidate Clippy errors"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
