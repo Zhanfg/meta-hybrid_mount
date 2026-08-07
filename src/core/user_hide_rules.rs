@@ -18,7 +18,7 @@ use crate::{
     utils,
 };
 
-fn validate_hide_path(path: &Path) -> Result<PathBuf> {
+fn validate_hide_path_shape(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("hide path must be absolute: {}", path.display());
     }
@@ -32,15 +32,22 @@ fn validate_hide_path(path: &Path) -> Result<PathBuf> {
         );
     }
     if normalized == Path::new("/") {
-        bail!("refusing to hide the filesystem root");
+        bail!("refusing to use the filesystem root as a hide rule");
     }
-    crate::path_safety::ensure_kasumi_target_allowed(&normalized)
-        .context("refusing to persist a radio/firmware/system-critical hide rule")?;
-
     Ok(normalized)
 }
 
-fn load_user_hide_rules_from(path: &Path) -> Result<Vec<PathBuf>> {
+fn validate_hide_path(path: &Path) -> Result<PathBuf> {
+    let normalized = validate_hide_path_shape(path)?;
+    crate::path_safety::ensure_kasumi_target_allowed(&normalized)
+        .context("refusing to persist a radio/firmware/system-critical hide rule")?;
+    Ok(normalized)
+}
+
+fn load_user_hide_rules_with<F>(path: &Path, mut validate: F) -> Result<Vec<PathBuf>>
+where
+    F: FnMut(&Path) -> Result<PathBuf>,
+{
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -53,13 +60,21 @@ fn load_user_hide_rules_from(path: &Path) -> Result<Vec<PathBuf>> {
     let mut seen = HashSet::new();
     let mut rules = Vec::with_capacity(values.len());
     for value in values {
-        let rule = validate_hide_path(Path::new(&value))
+        let rule = validate(Path::new(&value))
             .with_context(|| format!("invalid user hide rule in {}: {value}", path.display()))?;
         if seen.insert(rule.clone()) {
             rules.push(rule);
         }
     }
     Ok(rules)
+}
+
+fn load_user_hide_rules_from(path: &Path) -> Result<Vec<PathBuf>> {
+    load_user_hide_rules_with(path, validate_hide_path)
+}
+
+fn load_user_hide_rules_for_removal(path: &Path) -> Result<Vec<PathBuf>> {
+    load_user_hide_rules_with(path, validate_hide_path_shape)
 }
 
 fn save_user_hide_rules_to(path: &Path, rules: &[PathBuf]) -> Result<()> {
@@ -102,7 +117,8 @@ fn commit_user_hide_rules(previous: &[PathBuf], updated: &[PathBuf]) -> Result<(
     }
 
     if let Err(update_error) = kasumi_mount::apply_runtime_config(&config) {
-        if let Err(save_error) = save_user_hide_rules(previous) {
+        if let Err(save_error) = save_user_hide_rules_to(Path::new(defs::USER_HIDE_RULES_FILE), previous)
+        {
             bail!(
                 "user hide runtime update failed and rule file rollback also failed: update={update_error:#}; save_rollback={save_error:#}"
             );
@@ -154,14 +170,9 @@ pub fn add_user_hide_rule(path: &Path) -> Result<bool> {
 }
 
 pub fn remove_user_hide_rule(path: &Path) -> Result<bool> {
-    if !path.is_absolute() {
-        bail!("hide path must be absolute: {}", path.display());
-    }
-    let path = utils::normalize_path(path);
-    if path == Path::new("/") {
-        bail!("refusing to remove the filesystem root as a hide rule");
-    }
-    let previous = load_user_hide_rules()?;
+    let path = validate_hide_path_shape(path)?;
+    let rules_path = Path::new(defs::USER_HIDE_RULES_FILE);
+    let previous = load_user_hide_rules_for_removal(rules_path)?;
     let mut updated = previous.clone();
     updated.retain(|rule| rule != &path);
 
@@ -169,7 +180,17 @@ pub fn remove_user_hide_rule(path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    commit_user_hide_rules(&previous, &updated)?;
+    // Removal must stay available even when the legacy file contains another
+    // now-forbidden target. Persist the reduced set first; runtime application
+    // remains fail-closed until every protected legacy rule has been removed.
+    save_user_hide_rules_to(rules_path, &updated)?;
+    if updated.iter().all(|rule| validate_hide_path(rule).is_ok()) {
+        let config = load_runtime_config()?;
+        if config.kasumi.enabled {
+            kasumi_mount::apply_runtime_config(&config)
+                .context("failed to rebuild Kasumi runtime after hide-rule removal")?;
+        }
+    }
     Ok(true)
 }
 
@@ -238,6 +259,19 @@ mod tests {
         assert!(validate_hide_path(Path::new("/system/vendor/etc/bluetooth/bt_vendor.conf")).is_err());
         assert!(validate_hide_path(Path::new("/vendor/lib64/libbt-vendor.so")).is_err());
         assert!(validate_hide_path(Path::new("/vendor/lib64/soundfx/libdolby.so")).is_ok());
+    }
+
+    #[test]
+    fn removal_loader_accepts_legacy_critical_rules_but_strict_loader_rejects_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("user_hide_rules.json");
+        fs::write(&path, r#"["/vendor/firmware/modem.mbn"]"#).unwrap();
+
+        assert!(load_user_hide_rules_from(&path).is_err());
+        assert_eq!(
+            load_user_hide_rules_for_removal(&path).unwrap(),
+            vec![PathBuf::from("/vendor/firmware/modem.mbn")]
+        );
     }
 
     #[test]
