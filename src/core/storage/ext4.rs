@@ -91,15 +91,21 @@ fn calculate_total_size(paths: &[PathBuf]) -> Result<u64> {
 
 fn format_ext4_image(img_path: &Path) -> Result<()> {
     let result = Command::new("mkfs.ext4")
+        .arg("-O")
+        .arg("^has_journal")
         .arg("-b")
         .arg(MKFS_EXT4_BLOCK_SIZE)
         .arg("-i")
         .arg(MKFS_EXT4_BYTES_PER_INODE)
         .arg(img_path)
-        .stdout(std::process::Stdio::piped())
         .output()?;
 
-    ensure!(result.status.success(), "Failed to format ext4 image");
+    ensure!(
+        result.status.success(),
+        "Failed to format ext4 image {}: {}",
+        img_path.display(),
+        String::from_utf8_lossy(&result.stderr).trim()
+    );
     Ok(())
 }
 
