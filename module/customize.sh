@@ -11,56 +11,113 @@ if [ -n "${KSU_LATE_LOAD:-}" ] && [ -n "${KSU:-}" ]; then
   abort "! unsupported late load mode"
 fi
 
-validate_zip_layout() {
-  listing="${TMPDIR:-/data/local/tmp}/rehybird-zip-listing.$$"
-  rm -f "$listing"
-  if ! unzip -l "$ZIPFILE" >"$listing" 2>/dev/null; then
-    rm -f "$listing"
-    return 1
-  fi
+INSTALL_WORK_ROOT="${TMPDIR:-/data/local/tmp}/rehybird-install.$$"
+BOOTSTRAP_LISTING="$INSTALL_WORK_ROOT/archive.listing"
+ARCHIVE_HELPER="$INSTALL_WORK_ROOT/archive-safety.sh"
+ARCHIVE_MANIFEST="$INSTALL_WORK_ROOT/archive.manifest"
+STAGED_TREE="$INSTALL_WORK_ROOT/staged"
+
+cleanup_install_work() {
+  rm -rf "$INSTALL_WORK_ROOT"
+}
+trap cleanup_install_work 0 1 2 15
+
+bootstrap_validate_archive() {
+  rm -f "$BOOTSTRAP_LISTING"
+  unzip -l "$ZIPFILE" >"$BOOTSTRAP_LISTING" 2>/dev/null || return 1
 
   awk -v max_file=33554432 -v max_total=100663296 -v max_entries=5000 '
     $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9-]+$/ && $3 ~ /^[0-9:]+$/ {
       size = $1 + 0
-      line = $0
-      sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9-]+[[:space:]]+[0-9:]+[[:space:]]+/, "", line)
-      if (line == "") next
+      name = $0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9-]+[[:space:]]+[0-9:]+[[:space:]]+/, "", name)
+      if (name == "") next
 
       count++
       total += size
       if (size > max_file || total > max_total || count > max_entries) bad = 1
-      if (seen[line]++) bad = 1
-      if (line ~ /^\// || line ~ /^[A-Za-z]:/ || line ~ /(^|\/)\.\.(\/|$)/ || line ~ /\\/) bad = 1
+      if (seen[name]++) bad = 1
+      if (name !~ /^[A-Za-z0-9._\/-]+$/) bad = 1
+      if (name ~ /^\// || name ~ /^[A-Za-z]:/ || name ~ /(^|\/)\.\.(\/|$)/ || name ~ /\\/) bad = 1
+      if (name == "archive-safety.sh") helper_count++
     }
     END {
-      if (count == 0 || bad) exit 1
+      if (count == 0 || bad || helper_count != 1) exit 1
     }
-  ' "$listing"
+  ' "$BOOTSTRAP_LISTING"
   status=$?
-  rm -f "$listing"
+  rm -f "$BOOTSTRAP_LISTING"
   return "$status"
 }
 
-ui_print "- Verifying archive CRC and layout..."
+ui_print "- Verifying archive CRC and bootstrap layout..."
 if ! unzip -t "$ZIPFILE" >/dev/null 2>&1; then
   abort "! Package CRC verification failed; refusing partial installation"
 fi
-if ! validate_zip_layout; then
-  abort "! Package archive layout, size, or entry validation failed"
+if ! mkdir -p "$INSTALL_WORK_ROOT"; then
+  abort "! Failed to create private installation workspace"
 fi
-if ! unzip -o "$ZIPFILE" -d "$MODPATH" >&2; then
-  abort "! Package extraction failed; refusing partial installation"
+chmod 700 "$INSTALL_WORK_ROOT" 2>/dev/null || true
+if ! bootstrap_validate_archive; then
+  abort "! Package archive layout, size, name, or duplicate-entry validation failed"
 fi
+if ! unzip -p "$ZIPFILE" archive-safety.sh >"$ARCHIVE_HELPER"; then
+  abort "! Failed to read archive safety helper"
+fi
+chmod 600 "$ARCHIVE_HELPER" 2>/dev/null || true
+if [ ! -s "$ARCHIVE_HELPER" ] || ! sh -n "$ARCHIVE_HELPER"; then
+  abort "! Archive safety helper is empty or invalid"
+fi
+# shellcheck source=module/archive-safety.sh
+. "$ARCHIVE_HELPER"
+
+if ! rehybird_build_archive_manifest "$ZIPFILE" "$ARCHIVE_MANIFEST"; then
+  abort "! Package manifest validation failed"
+fi
+if ! rehybird_extract_regular_archive "$ZIPFILE" "$STAGED_TREE" "$ARCHIVE_MANIFEST"; then
+  abort "! Regular-file-only package extraction failed"
+fi
+if [ ! -r "$STAGED_TREE/package-integrity.sh" ]; then
+  abort "! Package integrity validator is missing from staged tree"
+fi
+# shellcheck source=module/package-integrity.sh
+. "$STAGED_TREE/package-integrity.sh"
+if ! rehybird_validate_package_tree "$STAGED_TREE"; then
+  abort "! Staged package structure or flavor validation failed"
+fi
+STAGED_FLAVOR="$REHYBIRD_PACKAGE_FLAVOR"
+
+replace_status=0
+rehybird_replace_module_tree "$STAGED_TREE" "$MODPATH" || replace_status=$?
+case "$replace_status" in
+0)
+  ;;
+2)
+  ui_print "! Verified package installed, but old staging backup cleanup was deferred"
+  ;;
+3)
+  abort "! Verified package installation and rollback both failed"
+  ;;
+*)
+  abort "! Verified package could not replace installer staging tree"
+  ;;
+esac
 
 if [ ! -r "$MODPATH/package-integrity.sh" ]; then
-  abort "! Package integrity validator is missing"
+  abort "! Final package integrity validator is missing"
 fi
 # shellcheck source=module/package-integrity.sh
 . "$MODPATH/package-integrity.sh"
 if ! rehybird_validate_package_tree "$MODPATH"; then
-  abort "! Package structure or flavor validation failed"
+  abort "! Final package tree failed post-copy validation"
+fi
+if [ "$REHYBIRD_PACKAGE_FLAVOR" != "$STAGED_FLAVOR" ]; then
+  abort "! Package flavor changed during installation"
 fi
 ui_print "- Package integrity verified: $REHYBIRD_PACKAGE_FLAVOR"
+
+cleanup_install_work
+trap - 0 1 2 15
 
 case "$ARCH" in
 "arm64")
