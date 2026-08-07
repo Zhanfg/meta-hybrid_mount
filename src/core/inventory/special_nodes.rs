@@ -147,11 +147,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("system/app")).unwrap();
         fs::write(temp.path().join("system/app/example.apk"), b"ok").unwrap();
-        symlink(
-            "example.apk",
-            temp.path().join("system/app/example-link"),
-        )
-        .unwrap();
+        symlink("example.apk", temp.path().join("system/app/example-link")).unwrap();
 
         assert!(
             first_blocked_special_node(temp.path(), &kasumi_rules())
