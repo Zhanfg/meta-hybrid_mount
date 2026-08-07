@@ -328,8 +328,12 @@ fn parse_kmi_from_release(release: &str) -> Result<String> {
         .unwrap_or(full_version.len());
     let major_minor = &full_version[..dot2];
     let mut version_parts = major_minor.split('.');
-    let major = version_parts.next().context("kernel release has no major version")?;
-    let minor = version_parts.next().context("kernel release has no minor version")?;
+    let major = version_parts
+        .next()
+        .context("kernel release has no major version")?;
+    let minor = version_parts
+        .next()
+        .context("kernel release has no minor version")?;
     if version_parts.next().is_some()
         || major.is_empty()
         || minor.is_empty()
