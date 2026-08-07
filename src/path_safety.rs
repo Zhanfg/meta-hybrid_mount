@@ -220,6 +220,56 @@ pub fn ensure_kasumi_target_allowed(target: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn ensure_kasumi_mirror_path_allowed(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("Kasumi mirror_path must be absolute: {}", path.display());
+    }
+
+    let normalized = crate::utils::normalize_path(path);
+    if normalized != path {
+        bail!(
+            "Kasumi mirror_path must already be normalized: original={}, normalized={}",
+            path.display(),
+            normalized.display()
+        );
+    }
+
+    let default = Path::new(crate::defs::KASUMI_MIRROR_DIR);
+    let allowed_custom = normalized.parent() == Some(Path::new("/dev"))
+        && normalized
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("kasumi_mirror"));
+    if normalized != default && !allowed_custom {
+        bail!(
+            "Kasumi mirror_path must be {} or /dev/kasumi_mirror*: {}",
+            crate::defs::KASUMI_MIRROR_DIR,
+            path.display()
+        );
+    }
+
+    if let Ok(metadata) = fs::symlink_metadata(&normalized) {
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            bail!(
+                "Kasumi mirror_path exists but is not a real directory: {}",
+                normalized.display()
+            );
+        }
+        let resolved = fs::canonicalize(&normalized).with_context(|| {
+            format!("failed to resolve Kasumi mirror_path {}", normalized.display())
+        })?;
+        if resolved != normalized {
+            bail!(
+                "Kasumi mirror_path resolves outside its declared path: {} -> {}",
+                normalized.display(),
+                resolved.display()
+            );
+        }
+    }
+
+    Ok(normalized)
+}
+
 pub fn ensure_custom_bind_target_allowed(target: &Path) -> Result<()> {
     if !target.is_absolute() {
         bail!(
@@ -262,13 +312,16 @@ pub fn validate_config_targets(config: &crate::conf::schema::Config) -> Result<(
         ensure_custom_bind_target_allowed(&mount.target)?;
     }
     #[cfg(feature = "kasumi")]
-    for rule in &config.kasumi.kstat_rules {
-        if rule.target_pathname.as_os_str().is_empty() {
-            bail!(
-                "stable Kasumi kstat rules require target_pathname so the target can be safety-audited"
-            );
+    {
+        ensure_kasumi_mirror_path_allowed(&config.kasumi.mirror_path)?;
+        for rule in &config.kasumi.kstat_rules {
+            if rule.target_pathname.as_os_str().is_empty() {
+                bail!(
+                    "stable Kasumi kstat rules require target_pathname so the target can be safety-audited"
+                );
+            }
+            ensure_kasumi_target_allowed(&rule.target_pathname)?;
         }
-        ensure_kasumi_target_allowed(&rule.target_pathname)?;
     }
     Ok(())
 }
@@ -500,5 +553,16 @@ mod tests {
 
         symlink("file", root.join("nested/link")).unwrap();
         assert!(ensure_safe_kasumi_directory_source(&root).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mirror_path_rejects_existing_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("kasumi_mirror_test");
+        symlink("/dev", &link).unwrap();
+        assert!(ensure_kasumi_mirror_path_allowed(&link).is_err());
     }
 }
