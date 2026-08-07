@@ -95,8 +95,12 @@ fn parse_detected_kmi(release: &str) -> Result<ParsedKmi> {
 
 fn release_major_minor(release: &str) -> Result<String> {
     let mut components = release.split('.');
-    let major = components.next().context("kernel release has no major version")?;
-    let minor = components.next().context("kernel release has no minor version")?;
+    let major = components
+        .next()
+        .context("kernel release has no major version")?;
+    let minor = components
+        .next()
+        .context("kernel release has no minor version")?;
     validate_numeric_component(major, "major")?;
     validate_numeric_component(minor, "minor")?;
     Ok(format!("{major}.{minor}"))
@@ -169,10 +173,14 @@ mod tests {
 
     #[test]
     fn rejects_unverifiable_vendor_release() {
-        let error = validate_override_for_release("android15-6.6", "6.6.89-vendor-release")
-            .unwrap_err();
+        let error =
+            validate_override_for_release("android15-6.6", "6.6.89-vendor-release").unwrap_err();
 
-        assert!(error.to_string().contains("cannot verify Kasumi KMI override"));
+        assert!(
+            error
+                .to_string()
+                .contains("cannot verify Kasumi KMI override")
+        );
     }
 
     #[test]
