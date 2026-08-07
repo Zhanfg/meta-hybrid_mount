@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    fs,
+    fs as std_fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -96,7 +96,7 @@ fn cleanup_staging_mounts(staging_dirs: &[PathBuf]) -> Result<()> {
             continue;
         }
 
-        if let Err(error) = fs::remove_dir(staging_dir)
+        if let Err(error) = std_fs::remove_dir(staging_dir)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             errors.push(format!(
@@ -145,7 +145,7 @@ pub fn mount_overlayfs(
         if let Err(error) =
             mount_overlay_core(&bottom_chunk, None, None, &staging_dir, mount_source)
         {
-            let _ = fs::remove_dir(&staging_dir);
+            let _ = std_fs::remove_dir(&staging_dir);
             if let Err(cleanup_error) = cleanup_staging_mounts(&staging_dirs) {
                 bail!(
                     "failed to create OverlayFS staging layer and rollback failed: mount={error:#}; rollback={cleanup_error:#}"
