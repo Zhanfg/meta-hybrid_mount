@@ -143,15 +143,35 @@ fi
 
 active="$temp_dir/modules/alpha"
 staged="$temp_dir/staged-alpha"
-mkdir -p "$active" "$staged"
+backup="$temp_dir/private-backups/alpha"
+mkdir -p "$active" "$staged" "${backup%/*}"
 printf 'old\n' >"$active/version"
 printf 'new\n' >"$staged/version"
-rehybird_replace_module_tree "$staged" "$active"
+rehybird_stage_module_tree "$staged" "$active" "$backup"
 [ "$(cat "$active/version")" = new ]
-[ -z "$(find "$temp_dir/modules" -maxdepth 1 -name 'alpha.rehybird-extract-backup.*' -print -quit)" ]
+[ "$(cat "$backup/version")" = old ]
+rehybird_commit_module_tree "$backup"
+[ ! -e "$backup" ]
+[ "$(cat "$active/version")" = new ]
+
+final_check_active="$temp_dir/modules/final-check"
+final_check_staged="$temp_dir/staged-final-check"
+final_check_backup="$temp_dir/private-backups/final-check"
+mkdir -p "$final_check_active" "$final_check_staged"
+printf 'old\n' >"$final_check_active/version"
+printf 'invalid-new\n' >"$final_check_staged/version"
+rehybird_stage_module_tree \
+  "$final_check_staged" \
+  "$final_check_active" \
+  "$final_check_backup"
+[ "$(cat "$final_check_active/version")" = invalid-new ]
+rehybird_rollback_module_tree "$final_check_active" "$final_check_backup"
+[ "$(cat "$final_check_active/version")" = old ]
+[ ! -e "$final_check_backup" ]
 
 rollback_active="$temp_dir/modules/rollback"
 rollback_staged="$temp_dir/staged-rollback"
+rollback_backup="$temp_dir/private-backups/rollback"
 mkdir -p "$rollback_active" "$rollback_staged" "$temp_dir/fail-cp-bin"
 printf 'old\n' >"$rollback_active/version"
 printf 'new\n' >"$rollback_staged/version"
@@ -163,36 +183,43 @@ chmod 755 "$temp_dir/fail-cp-bin/cp"
 old_path="$PATH"
 PATH="$temp_dir/fail-cp-bin:$PATH"
 set +e
-rehybird_replace_module_tree "$rollback_staged" "$rollback_active" >/dev/null 2>&1
+rehybird_stage_module_tree \
+  "$rollback_staged" \
+  "$rollback_active" \
+  "$rollback_backup" >/dev/null 2>&1
 rollback_status=$?
 set -e
 PATH="$old_path"
 [ "$rollback_status" = 1 ]
 [ "$(cat "$rollback_active/version")" = old ]
-[ -z "$(find "$temp_dir/modules" -maxdepth 1 -name 'rollback.rehybird-extract-backup.*' -print -quit)" ]
+[ ! -e "$rollback_backup" ]
 
 cleanup_active="$temp_dir/modules/cleanup"
 cleanup_staged="$temp_dir/staged-cleanup"
+cleanup_backup="$temp_dir/private-backups/cleanup"
 mkdir -p "$cleanup_active" "$cleanup_staged" "$temp_dir/fail-backup-rm-bin"
 printf 'old\n' >"$cleanup_active/version"
 printf 'new\n' >"$cleanup_staged/version"
+rehybird_stage_module_tree "$cleanup_staged" "$cleanup_active" "$cleanup_backup"
 real_rm="$(command -v rm)"
 cat >"$temp_dir/fail-backup-rm-bin/rm" <<EOF
 #!/bin/sh
 case "\$*" in
-  *rehybird-extract-backup*) exit 1 ;;
+  *private-backups/cleanup*) exit 1 ;;
 esac
 exec "$real_rm" "\$@"
 EOF
 chmod 755 "$temp_dir/fail-backup-rm-bin/rm"
 PATH="$temp_dir/fail-backup-rm-bin:$PATH"
 set +e
-rehybird_replace_module_tree "$cleanup_staged" "$cleanup_active" >/dev/null 2>&1
+rehybird_commit_module_tree "$cleanup_backup" >/dev/null 2>&1
 cleanup_status=$?
 set -e
 PATH="$old_path"
-[ "$cleanup_status" = 2 ]
-[ "$(cat "$cleanup_active/version")" = old ]
-[ -z "$(find "$temp_dir/modules" -maxdepth 1 -name 'cleanup.rehybird-extract-backup.*' -print -quit)" ]
+[ "$cleanup_status" -ne 0 ]
+[ "$(cat "$cleanup_active/version")" = new ]
+[ "$(cat "$cleanup_backup/version")" = old ]
+rehybird_commit_module_tree "$cleanup_backup"
+[ ! -e "$cleanup_backup" ]
 
 echo 'Archive safety tests passed'
