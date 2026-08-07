@@ -81,14 +81,9 @@ pub(super) fn first_blocked_special_node(
                 continue;
             }
 
-            if file_type.is_block_device()
-                || file_type.is_char_device()
-                || file_type.is_fifo()
-                || file_type.is_socket()
-            {
-                return Ok(Some(relative_path));
-            }
-
+            // Any remaining filesystem node type is rejected by default.
+            // This covers block/character devices, FIFOs, sockets and future
+            // special types without depending on a finite allow-deny list.
             return Ok(Some(relative_path));
         }
     }
