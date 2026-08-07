@@ -78,10 +78,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo unshare --mount --propagation private -- \
-            "$TEST_BINARY" \
-            privileged_magic_mount_excludes_temporary_worktree_from_unmount_registration \
-            --ignored \
-            --nocapture \
-            --exact \
-            --test-threads=1
+          VALIDATION_OUTPUT="$(
+            sudo unshare --mount --propagation private -- \
+              "$TEST_BINARY" \
+              privileged_magic_mount_excludes_temporary_worktree_from_unmount_registration \
+              --ignored \
+              --nocapture \
+              --test-threads=1 \
+              2>&1
+          )"
+          printf '%s\n' "$VALIDATION_OUTPUT"
+          grep -F 'running 1 test' <<< "$VALIDATION_OUTPUT"
+          grep -F 'test result: ok. 1 passed; 0 failed' <<< "$VALIDATION_OUTPUT"
