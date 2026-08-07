@@ -75,6 +75,8 @@ fn load_config(main_path: &Path) -> Result<Config> {
     let mut config = toml::from_str::<Config>(&content)
         .with_context(|| format!("failed to parse config file {}", main_path.display()))?;
     config.sanitize_disabled_features();
+    crate::path_safety::validate_config_targets(&config)
+        .context("config contains a protected runtime or radio-critical target")?;
 
     crate::scoped_log!(
         debug,
@@ -94,6 +96,8 @@ impl Config {
     #[cfg(feature = "control-plane")]
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let main_path = path.as_ref();
+        crate::path_safety::validate_config_targets(self)
+            .context("refusing to persist a protected runtime or radio-critical target")?;
         let content = toml::to_string_pretty(self).context("failed to serialize config")?;
 
         ensure_parent_dir(main_path)?;
@@ -156,6 +160,35 @@ mod tests {
 
         let previous_backup = fs::read_to_string(temp.path().join("config.toml.bak.1")).unwrap();
         assert!(previous_backup.contains("default_mode = \"magic\""));
+    }
+
+    #[test]
+    fn config_rejects_protected_custom_bind_targets_before_persisting() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let mut config = Config::default();
+        config.custom_mounts.push(crate::conf::schema::CustomBindMount {
+            source: "/data/local/tmp/source".into(),
+            target: "/vendor/firmware/modem.mbn".into(),
+        });
+
+        assert!(config.save_to_file(&config_path).is_err());
+        assert!(!config_path.exists());
+    }
+
+    #[cfg(feature = "kasumi")]
+    #[test]
+    fn config_rejects_protected_kstat_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let mut config = Config::default();
+        config.kasumi.kstat_rules.push(crate::conf::schema::KasumiKstatRuleConfig {
+            target_pathname: "/vendor/etc/radio/config.xml".into(),
+            ..crate::conf::schema::KasumiKstatRuleConfig::default()
+        });
+
+        assert!(config.save_to_file(&config_path).is_err());
+        assert!(!config_path.exists());
     }
 
     #[cfg(not(feature = "kasumi"))]
