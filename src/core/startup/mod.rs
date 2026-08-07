@@ -112,8 +112,12 @@ where
 {
     sys::trusted::ensure_private_dir(Path::new(defs::HYBRID_MOUNT_DIR), 0o700)
         .context("Failed to validate private REHYBIRD data directory")?;
-    sys::trusted::ensure_private_dir(Path::new(defs::RUN_DIR), 0o700)
-        .with_context(|| format!("Failed to validate private run directory: {}", defs::RUN_DIR))?;
+    sys::trusted::ensure_private_dir(Path::new(defs::RUN_DIR), 0o700).with_context(|| {
+        format!(
+            "Failed to validate private run directory: {}",
+            defs::RUN_DIR
+        )
+    })?;
 
     utils::init_logging().context("Failed to initialize logging")?;
     crate::scoped_log!(info, "startup", "init: daemon=hybrid-mount");
