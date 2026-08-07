@@ -179,8 +179,19 @@ rm -rf "$MODPATH/system"
 if [ "$NANO_MODE" = "true" ]; then
   rm -rf "$MODPATH/webroot" "$MODPATH/launcher.png"
 fi
+
+if [ ! -r "$MODPATH/metasafety.sh" ] || ! sh -n "$MODPATH/metasafety.sh"; then
+  abort "! Private data safety helper is missing or invalid"
+fi
+# shellcheck source=module/metasafety.sh
+. "$MODPATH/metasafety.sh"
+
 BASE_DIR="/data/adb/hybrid-mount"
-mkdir -p "$BASE_DIR" || abort "! Failed to create $BASE_DIR"
+CONFIG_PATH="$BASE_DIR/config.toml"
+BLACKLIST_PATH="$BASE_DIR/module_blacklist.toml"
+if ! rehybird_prepare_private_root "$BASE_DIR"; then
+  abort "! Private data root is unsafe; refusing installation"
+fi
 
 wait_volume_key_or_timeout() {
   local timeout_seconds start_time current_time key_event
@@ -230,29 +241,44 @@ KEY_volume_detect() {
     ;;
   esac
   ui_print "- Configured mode: $chosen_mode"
-  sed -i "s/^default_mode = .*/default_mode = \"$chosen_mode\"/" "$BASE_DIR/config.toml"
+  if ! sed -i "s/^default_mode = .*/default_mode = \"$chosen_mode\"/" "$CONFIG_PATH"; then
+    abort "! Failed to update default mount mode"
+  fi
+  if ! grep -Fx "default_mode = \"$chosen_mode\"" "$CONFIG_PATH" >/dev/null 2>&1; then
+    abort "! Default mount mode update was not applied"
+  fi
+  if ! rehybird_secure_existing_private_file "$CONFIG_PATH"; then
+    abort "! Updated config file failed private-file validation"
+  fi
 }
 
-if [ ! -f "$BASE_DIR/config.toml" ]; then
+if [ -e "$CONFIG_PATH" ] || [ -L "$CONFIG_PATH" ]; then
+  if ! rehybird_secure_existing_private_file "$CONFIG_PATH"; then
+    abort "! Existing config is not a trusted root-owned regular file"
+  fi
+  ui_print "- Existing config found"
+  ui_print "- Skipping setup wizard to preserve settings"
+else
   ui_print "- Fresh installation detected"
-  ui_print "- Installing default config..."
-  if ! cat "$MODPATH/config.toml" >"$BASE_DIR/config.toml"; then
-    abort "! Failed to install default config"
+  ui_print "- Installing default config atomically..."
+  if ! rehybird_install_private_file "$MODPATH/config.toml" "$CONFIG_PATH"; then
+    abort "! Failed to install trusted default config"
   fi
   if [ "$NANO_MODE" = "true" ]; then
     ui_print "- Nano mode uses config.toml only; skipping setup wizard"
   else
     KEY_volume_detect
   fi
-else
-  ui_print "- Existing config found"
-  ui_print "- Skipping setup wizard to preserve settings"
 fi
 
-if [ ! -f "$BASE_DIR/module_blacklist.toml" ]; then
-  ui_print "- Installing default module blacklist..."
-  if ! cat "$MODPATH/module_blacklist.toml" >"$BASE_DIR/module_blacklist.toml"; then
-    abort "! Failed to install default module blacklist"
+if [ -e "$BLACKLIST_PATH" ] || [ -L "$BLACKLIST_PATH" ]; then
+  if ! rehybird_secure_existing_private_file "$BLACKLIST_PATH"; then
+    abort "! Existing module blacklist is not a trusted root-owned regular file"
+  fi
+else
+  ui_print "- Installing default module blacklist atomically..."
+  if ! rehybird_install_private_file "$MODPATH/module_blacklist.toml" "$BLACKLIST_PATH"; then
+    abort "! Failed to install trusted module blacklist"
   fi
 fi
 
