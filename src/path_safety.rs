@@ -153,7 +153,10 @@ pub fn is_radio_critical_system_path(target: &Path) -> bool {
 
 pub fn ensure_kasumi_target_allowed(target: &Path) -> Result<()> {
     if !target.is_absolute() {
-        bail!("Kasumi target must be an absolute path: {}", target.display());
+        bail!(
+            "Kasumi target must be an absolute path: {}",
+            target.display()
+        );
     }
     let normalized = crate::utils::normalize_path(target);
     if normalized != target {
@@ -177,7 +180,10 @@ pub fn ensure_kasumi_target_allowed(target: &Path) -> Result<()> {
 
 pub fn ensure_custom_bind_target_allowed(target: &Path) -> Result<()> {
     if !target.is_absolute() {
-        bail!("custom bind target must be an absolute path: {}", target.display());
+        bail!(
+            "custom bind target must be an absolute path: {}",
+            target.display()
+        );
     }
     let normalized = crate::utils::normalize_path(target);
     if normalized != target {
@@ -231,9 +237,7 @@ where
     Ok(path)
 }
 
-pub fn deserialize_optional_safe_kasumi_target<'de, D>(
-    deserializer: D,
-) -> Result<PathBuf, D::Error>
+pub fn deserialize_optional_safe_kasumi_target<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -258,7 +262,10 @@ mod tests {
             "/odm/etc/vintf/manifest.xml",
             "/my_carrier/etc/modem/config.xml",
         ] {
-            assert!(ensure_kasumi_target_allowed(Path::new(path)).is_err(), "{path}");
+            assert!(
+                ensure_kasumi_target_allowed(Path::new(path)).is_err(),
+                "{path}"
+            );
         }
     }
 
@@ -270,7 +277,10 @@ mod tests {
             "/vendor/etc/audio_effects.xml",
             "/data/adb/modules/example",
         ] {
-            assert!(ensure_kasumi_target_allowed(Path::new(path)).is_ok(), "{path}");
+            assert!(
+                ensure_kasumi_target_allowed(Path::new(path)).is_ok(),
+                "{path}"
+            );
         }
     }
 
@@ -284,7 +294,12 @@ mod tests {
     #[test]
     fn custom_bind_policy_rejects_runtime_and_radio_targets() {
         assert!(ensure_custom_bind_target_allowed(Path::new("/data/adb/modules/example")).is_err());
-        assert!(ensure_custom_bind_target_allowed(Path::new("/vendor/firmware/modem.mbn")).is_err());
-        assert!(ensure_custom_bind_target_allowed(Path::new("/vendor/lib64/soundfx/libdolby.so")).is_ok());
+        assert!(
+            ensure_custom_bind_target_allowed(Path::new("/vendor/firmware/modem.mbn")).is_err()
+        );
+        assert!(
+            ensure_custom_bind_target_allowed(Path::new("/vendor/lib64/soundfx/libdolby.so"))
+                .is_ok()
+        );
     }
 }
