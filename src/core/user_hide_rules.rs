@@ -34,6 +34,8 @@ fn validate_hide_path(path: &Path) -> Result<PathBuf> {
     if normalized == Path::new("/") {
         bail!("refusing to hide the filesystem root");
     }
+    crate::path_safety::ensure_kasumi_target_allowed(&normalized)
+        .context("refusing to persist a radio/firmware/system-critical hide rule")?;
 
     Ok(normalized)
 }
@@ -124,6 +126,9 @@ pub fn load_user_hide_rules() -> Result<Vec<PathBuf>> {
 }
 
 pub fn save_user_hide_rules(rules: &[PathBuf]) -> Result<()> {
+    for rule in rules {
+        validate_hide_path(rule)?;
+    }
     save_user_hide_rules_to(Path::new(defs::USER_HIDE_RULES_FILE), rules)
 }
 
@@ -149,7 +154,13 @@ pub fn add_user_hide_rule(path: &Path) -> Result<bool> {
 }
 
 pub fn remove_user_hide_rule(path: &Path) -> Result<bool> {
-    let path = validate_hide_path(path)?;
+    if !path.is_absolute() {
+        bail!("hide path must be absolute: {}", path.display());
+    }
+    let path = utils::normalize_path(path);
+    if path == Path::new("/") {
+        bail!("refusing to remove the filesystem root as a hide rule");
+    }
     let previous = load_user_hide_rules()?;
     let mut updated = previous.clone();
     updated.retain(|rule| rule != &path);
@@ -176,6 +187,7 @@ pub fn apply_user_hide_rules() -> Result<usize> {
 
 pub fn apply_user_hide_rules_from_paths(rules: &[PathBuf]) -> Result<usize> {
     for path in rules {
+        validate_hide_path(path)?;
         kasumi::hide_path(path)
             .with_context(|| format!("failed to apply hide rule for {}", path.display()))?;
     }
@@ -218,6 +230,14 @@ mod tests {
             validate_hide_path(Path::new("/data/adb/modules/example")).unwrap(),
             PathBuf::from("/data/adb/modules/example")
         );
+    }
+
+    #[test]
+    fn hide_paths_reject_radio_and_firmware_targets() {
+        assert!(validate_hide_path(Path::new("/vendor/firmware/modem.mbn")).is_err());
+        assert!(validate_hide_path(Path::new("/system/vendor/etc/bluetooth/bt_vendor.conf")).is_err());
+        assert!(validate_hide_path(Path::new("/vendor/lib64/libbt-vendor.so")).is_err());
+        assert!(validate_hide_path(Path::new("/vendor/lib64/soundfx/libdolby.so")).is_ok());
     }
 
     #[test]
