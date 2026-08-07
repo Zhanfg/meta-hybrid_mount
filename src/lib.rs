@@ -8,5 +8,6 @@ pub mod defs;
 pub mod domain;
 pub mod mount;
 pub mod partitions;
+pub mod path_safety;
 pub mod sys;
 pub mod utils;
