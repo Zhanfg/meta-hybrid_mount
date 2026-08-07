@@ -38,7 +38,7 @@ rehybird_build_archive_manifest() {
       if (size > max_file || total > max_total || count > max_entries) bad = 1
       if (seen[name]++) bad = 1
       if (name !~ /^[A-Za-z0-9._\/-]+$/) bad = 1
-      if (name ~ /^\// || name ~ /^[A-Za-z]:/ || name ~ /(^|\/)\.\.(\/|$)/ || name ~ /\\/) bad = 1
+      if (name ~ /^\// || name ~ /^[A-Za-z]:/ || name ~ /(^|\/)\.\.(\/|$)/ || name ~ /(^|\/)\.(\/|$)/ || name ~ /\/\// || name ~ /\\/) bad = 1
       printf "%d\t%s\n", size, name
     }
     END {
