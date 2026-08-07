@@ -64,7 +64,7 @@ rehybird_extract_regular_archive() {
     rehybird_archive_error 'validated manifest is missing'
     return 1
   }
-  [ ! -e "$destination" ] || {
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
     rehybird_archive_error "destination already exists: $destination"
     return 1
   }
@@ -126,22 +126,26 @@ rehybird_replace_module_tree() {
     had_previous=true
   fi
 
-  if mkdir -p "$module_path" && cp -af "$staged_tree/." "$module_path/"; then
+  if ! mkdir -p "$module_path" || ! cp -af "$staged_tree/." "$module_path/"; then
+    rm -rf "$module_path" || true
     if [ "$had_previous" = true ]; then
-      rm -rf "$backup_path" || {
-        rehybird_archive_error "installed tree is valid but backup cleanup failed: $backup_path"
-        return 2
+      mv "$backup_path" "$module_path" || {
+        rehybird_archive_error 'module tree replacement and rollback both failed'
+        return 3
       }
     fi
-    return 0
+    return 1
   fi
 
-  rm -rf "$module_path" || true
-  if [ "$had_previous" = true ]; then
-    mv "$backup_path" "$module_path" || {
-      rehybird_archive_error "module tree replacement and rollback both failed"
-      return 3
-    }
+  if [ "$had_previous" = true ] && ! rm -rf "$backup_path"; then
+    rm -rf "$module_path" || true
+    if mv "$backup_path" "$module_path"; then
+      rehybird_archive_error 'backup cleanup failed; previous module tree was restored'
+      return 2
+    fi
+    rehybird_archive_error 'backup cleanup and rollback both failed'
+    return 3
   fi
-  return 1
+
+  return 0
 }
