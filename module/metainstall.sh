@@ -9,6 +9,26 @@ MANAGED_PARTITIONS="system odm product system_ext vendor apex mi_ext my_bigball 
 MODE_MARKERS="overlay magic"
 SELF_MOUNTING_MODULE_BLOCKLIST="scene_swap_controller AAaTempSpoof"
 NANO_MODE=false
+META_SAFETY_AVAILABLE=false
+
+load_meta_safety() {
+  local script_dir candidate
+  script_dir="${0%/*}"
+  for candidate in \
+    "$script_dir/metasafety.sh" \
+    "/data/adb/modules/hybrid_mount/metasafety.sh" \
+    "/data/adb/modules_update/hybrid_mount/metasafety.sh"; do
+    if [ -r "$candidate" ]; then
+      # shellcheck source=module/metasafety.sh
+      . "$candidate"
+      META_SAFETY_AVAILABLE=true
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_meta_safety || true
 
 detect_nano_mode() {
   local script_dir="${0%/*}"
@@ -254,47 +274,78 @@ fi
 ui_print "- Installation complete"
 
 metamodule_hot_install() {
+  local active_dir update_dir backup_dir stage_status rollback_status
 
   # Hot install is currently only supported on KernelSU.
-  if [ ! "$KSU" = true ]; then
+  if [ "${KSU:-}" != true ]; then
+    return
+  fi
+  if [ "$META_SAFETY_AVAILABLE" != true ]; then
+    ui_print "! REHYBIRD safety helper unavailable; keeping update staged for reboot"
+    return
+  fi
+  if ! rehybird_valid_module_id "${MODID:-}"; then
+    ui_print "! Invalid module ID; refusing hot install and keeping update staged"
+    return
+  fi
+  if module_has_managed_partitions; then
+    ui_print "- Module changes managed partitions; hot install is blocked for safety"
+    ui_print "- Update remains staged and will apply after reboot"
+    return
+  fi
+  if [ -n "${MODULE_HOT_RUN_SCRIPT:-}" ]; then
+    ui_print "- Requested hot-run script is not executed by REHYBIRD safety mode"
+    ui_print "- Update remains staged and will apply after reboot"
     return
   fi
 
-  if [ -z "$MODID" ]; then
+  active_dir="/data/adb/modules/$MODID"
+  update_dir="/data/adb/modules_update/$MODID"
+  backup_dir="${active_dir}.rehybird-backup.$$"
+
+  if [ ! -d "$active_dir" ] || [ ! -d "$update_dir" ]; then
     return
   fi
 
-  MODDIR_INTERNAL="/data/adb/modules/$MODID"
-  MODPATH_INTERNAL="/data/adb/modules_update/$MODID"
+  rehybird_stage_module_replace "$active_dir" "$update_dir" "$backup_dir"
+  stage_status=$?
+  if [ "$stage_status" -ne 0 ]; then
+    case "$stage_status" in
+    15)
+      abort "! Hot-install rollback failed; active module directory requires manual recovery"
+      ;;
+    *)
+      ui_print "! Hot install could not be staged safely (code $stage_status)"
+      ui_print "- Existing module remains active; update remains for reboot when possible"
+      return
+      ;;
+    esac
+  fi
 
-  if [ ! -d "$MODDIR_INTERNAL" ] || [ ! -d "$MODPATH_INTERNAL" ]; then
+  if ! mkdir -p "$update_dir" || ! cat "$active_dir/module.prop" >"$update_dir/module.prop"; then
+    rehybird_rollback_module_replace "$active_dir" "$update_dir" "$backup_dir"
+    rollback_status=$?
+    if [ "$rollback_status" -ne 0 ]; then
+      abort "! Hot-install metadata and rollback both failed (code $rollback_status)"
+    fi
+    ui_print "! Could not create KernelSU update stub; restored previous module"
     return
   fi
 
-  # hot install
-  busybox rm -rf "$MODDIR_INTERNAL"
-  busybox mv "$MODPATH_INTERNAL" "$MODDIR_INTERNAL"
-
-  # run script requested, blocking, just fork it yourselves if you want it on background
-  if [ ! -z "$MODULE_HOT_RUN_SCRIPT" ]; then
-    [ -f "$MODDIR_INTERNAL/$MODULE_HOT_RUN_SCRIPT" ] && sh "$MODDIR_INTERNAL/$MODULE_HOT_RUN_SCRIPT"
+  if ! rehybird_commit_module_replace "$backup_dir"; then
+    ui_print "! Hot install succeeded but backup cleanup failed: $backup_dir"
   fi
-
-  # we do this dance to satisfy kernelsu's ensure_file_exists
-  mkdir -p "$MODPATH_INTERNAL"
-  cat "$MODDIR_INTERNAL/module.prop" >"$MODPATH_INTERNAL/module.prop"
 
   (
     sleep 3
-    rm -rf "$MODDIR_INTERNAL/update"
-    rm -rf "$MODPATH_INTERNAL"
-  ) & # fork in background
+    rm -rf "$active_dir/update"
+    rm -rf "$update_dir"
+  ) &
 
-  ui_print "- Module hot install requested!"
-  ui_print "- Refresh module page after installation!"
-  ui_print "- No need to reboot!"
+  ui_print "- Config-only module hot install completed transactionally"
+  ui_print "- Refresh module page after installation"
 }
 
-if [ "$MODULE_HOT_INSTALL_REQUEST" = true ]; then
+if [ "${MODULE_HOT_INSTALL_REQUEST:-}" = true ]; then
   metamodule_hot_install
 fi
