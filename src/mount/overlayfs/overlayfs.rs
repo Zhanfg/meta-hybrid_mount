@@ -29,6 +29,22 @@ use crate::{
 
 const MAX_LAYERS: usize = 64;
 
+struct OverlayMountContext<'a> {
+    mount_source: &'a str,
+    register_umount: bool,
+    retained_staging_dirs: Vec<PathBuf>,
+}
+
+impl<'a> OverlayMountContext<'a> {
+    fn new(mount_source: &'a str, register_umount: bool) -> Self {
+        Self {
+            mount_source,
+            register_umount,
+            retained_staging_dirs: Vec::new(),
+        }
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn collect_child_mount_points(root_path: &Path) -> Result<Vec<String>> {
     let mounts = Process::myself()?
@@ -116,15 +132,13 @@ fn cleanup_staging_mounts(staging_dirs: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-pub fn mount_overlayfs(
+fn mount_overlayfs(
     lower_dirs: &[String],
     lowest: &str,
     upperdir: Option<PathBuf>,
     workdir: Option<PathBuf>,
     dest: impl AsRef<Path>,
-    mount_source: &str,
-    register_umount: bool,
-    retained_staging_dirs: &mut Vec<PathBuf>,
+    context: &mut OverlayMountContext<'_>,
 ) -> Result<()> {
     let mut current_layers: Vec<String> = lower_dirs.to_vec();
     current_layers.push(lowest.to_string());
@@ -146,9 +160,13 @@ pub fn mount_overlayfs(
 
         ensure_dir_exists(&staging_dir)?;
 
-        if let Err(error) =
-            mount_overlay_core(&bottom_chunk, None, None, &staging_dir, mount_source)
-        {
+        if let Err(error) = mount_overlay_core(
+            &bottom_chunk,
+            None,
+            None,
+            &staging_dir,
+            context.mount_source,
+        ) {
             let _ = std_fs::remove_dir(&staging_dir);
             if let Err(cleanup_error) = cleanup_staging_mounts(&staging_dirs) {
                 bail!(
@@ -167,7 +185,7 @@ pub fn mount_overlayfs(
             bottom_chunk.len()
         );
 
-        if register_umount && let Err(error) = send_umountable(&staging_dir) {
+        if context.register_umount && let Err(error) = send_umountable(&staging_dir) {
             if let Err(cleanup_error) = cleanup_staging_mounts(&staging_dirs) {
                 bail!(
                     "failed to queue OverlayFS staging unmount and rollback failed: registration={error:#}; rollback={cleanup_error:#}"
@@ -189,7 +207,7 @@ pub fn mount_overlayfs(
         upperdir.as_deref(),
         workdir.as_deref(),
         dest.as_ref(),
-        mount_source,
+        context.mount_source,
     ) {
         if let Err(cleanup_error) = cleanup_staging_mounts(&staging_dirs) {
             bail!(
@@ -199,7 +217,7 @@ pub fn mount_overlayfs(
         return Err(error);
     }
 
-    retained_staging_dirs.extend(staging_dirs);
+    context.retained_staging_dirs.extend(staging_dirs);
     Ok(())
 }
 
@@ -240,16 +258,14 @@ fn mount_overlay_child(
     relative: &String,
     module_roots: &Vec<String>,
     stock_root: &String,
-    mount_source: &str,
-    register_umount: bool,
-    retained_staging_dirs: &mut Vec<PathBuf>,
+    context: &mut OverlayMountContext<'_>,
 ) -> Result<()> {
     if !module_roots
         .iter()
         .any(|lower| Path::new(&format!("{lower}{relative}")).exists())
     {
         bind_mount(stock_root, mount_point)?;
-        if register_umount {
+        if context.register_umount {
             send_umountable(mount_point)?;
         }
         return Ok(());
@@ -276,11 +292,9 @@ fn mount_overlay_child(
         None,
         None,
         mount_point,
-        mount_source,
-        register_umount,
-        retained_staging_dirs,
+        context,
     )?;
-    if register_umount {
+    if context.register_umount {
         send_umountable(mount_point)?;
     }
     Ok(())
@@ -301,7 +315,7 @@ pub fn mount_overlay(
         let stock_root = ".";
         let root_path = Path::new(root);
         let mount_seq = collect_child_mount_points(root_path)?;
-        let mut retained_staging_dirs = Vec::new();
+        let mut context = OverlayMountContext::new(mount_source, register_umount);
 
         mount_overlayfs(
             module_roots,
@@ -309,9 +323,7 @@ pub fn mount_overlay(
             upperdir,
             workdir,
             root,
-            mount_source,
-            register_umount,
-            &mut retained_staging_dirs,
+            &mut context,
         )
         .context("mount overlayfs for root failed")?;
 
@@ -326,9 +338,7 @@ pub fn mount_overlay(
                 &relative,
                 module_roots,
                 &stock_root,
-                mount_source,
-                register_umount,
-                &mut retained_staging_dirs,
+                &mut context,
             ) {
                 let mut cleanup_errors = Vec::new();
                 if let Err(cleanup_error) = umount_dir(root) {
@@ -336,7 +346,7 @@ pub fn mount_overlay(
                         "failed to revert root mount {root}: {cleanup_error:#}"
                     ));
                 }
-                if let Err(cleanup_error) = cleanup_staging_mounts(&retained_staging_dirs) {
+                if let Err(cleanup_error) = cleanup_staging_mounts(&context.retained_staging_dirs) {
                     cleanup_errors.push(format!("{cleanup_error:#}"));
                 }
 
