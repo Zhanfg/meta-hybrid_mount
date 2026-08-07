@@ -10,7 +10,10 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::domain::{ModuleRules, MountMode};
+use crate::{
+    defs,
+    domain::{ModuleRules, MountMode},
+};
 
 const MAX_SCANNED_ENTRIES: usize = 100_000;
 const MAX_DIRECTORY_DEPTH: usize = 64;
@@ -19,49 +22,104 @@ const CRITICAL_TREE_ROOTS: &[&str] = &[
     "system/etc/firmware",
     "vendor/firmware",
     "vendor/firmware_mnt",
+    "vendor/bt_firmware",
+    "vendor/etc/firmware",
     "vendor/rfs",
     "vendor/etc/bluetooth",
     "vendor/etc/qcril_database",
     "vendor/etc/radio",
     "vendor/etc/modem",
+    "vendor/etc/init",
+    "vendor/etc/vintf",
+    "vendor/etc/selinux",
     "odm/firmware",
+    "odm/bt_firmware",
+    "odm/etc/firmware",
     "odm/etc/bluetooth",
     "odm/etc/radio",
     "odm/etc/modem",
+    "odm/etc/init",
+    "odm/etc/vintf",
+    "odm/etc/selinux",
     "my_carrier/firmware",
+    "my_carrier/bt_firmware",
+    "my_carrier/etc/firmware",
     "my_carrier/etc/radio",
     "my_carrier/etc/modem",
+    "my_carrier/etc/init",
+    "my_carrier/etc/vintf",
+];
+
+const CRITICAL_REPLACE_PARENTS: &[&str] = &[
+    "system",
+    "vendor",
+    "odm",
+    "product",
+    "system_ext",
+    "apex",
+    "my_carrier",
+    "vendor/etc",
+    "vendor/bin",
+    "vendor/lib",
+    "vendor/lib64",
+    "odm/etc",
+    "odm/bin",
+    "odm/lib",
+    "odm/lib64",
+    "my_carrier/etc",
+    "my_carrier/bin",
+    "my_carrier/lib",
+    "my_carrier/lib64",
 ];
 
 const SENSITIVE_AREAS: &[&str] = &[
     "vendor/bin",
     "vendor/lib",
     "vendor/lib64",
-    "vendor/etc/init",
-    "vendor/etc/vintf",
+    "vendor/etc/permissions",
+    "vendor/etc/sysconfig",
     "odm/bin",
     "odm/lib",
     "odm/lib64",
-    "odm/etc/init",
-    "odm/etc/vintf",
+    "odm/etc/permissions",
+    "odm/etc/sysconfig",
     "my_carrier/bin",
     "my_carrier/lib",
     "my_carrier/lib64",
-    "my_carrier/etc/init",
+    "my_carrier/etc/permissions",
+    "my_carrier/etc/sysconfig",
 ];
 
 const SENSITIVE_IDENTIFIERS: &[&str] = &[
-    "android.hardware.bluetooth",
+    "bluetooth",
     "android.hardware.radio",
-    "vendor.qti.hardware.bluetooth",
     "vendor.qti.hardware.radio",
-    "vendor.oplus.hardware.bluetooth",
     "vendor.oplus.hardware.radio",
+    "telephony",
     "qcril",
     "libril",
     "/rild",
-    "modem_service",
-    "modemservice",
+    "modem",
+    "libbt",
+    "bt_vendor",
+    "bt_firmware",
+    "wcnss",
+    "mpss",
+];
+
+const CRITICAL_EXACT_FILES: &[&str] = &[
+    "vendor/ueventd.rc",
+    "vendor/build.prop",
+    "vendor/default.prop",
+    "odm/ueventd.rc",
+    "odm/build.prop",
+    "my_carrier/build.prop",
+];
+
+const CRITICAL_FILE_PREFIXES: &[&str] = &[
+    "vendor/etc/fstab.",
+    "odm/etc/fstab.",
+    "my_carrier/etc/fstab.",
 ];
 
 pub(super) fn first_blocked_critical_path(
@@ -92,8 +150,14 @@ pub(super) fn first_blocked_critical_path(
             })?;
             let relative_path = relative_directory.join(entry.file_name());
             let normalized_path = normalize_partition_alias(&relative_path);
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
 
-            if is_critical_payload_path(&normalized_path) {
+            let blocked = is_critical_payload_path(&normalized_path)
+                || is_critical_replace_marker(&normalized_path)
+                || (is_partition_root(&normalized_path) && !file_type.is_dir());
+            if blocked {
                 let ignored = matches!(rules.effective_mode(&relative_path), MountMode::Ignore)
                     || (normalized_path != relative_path
                         && matches!(rules.effective_mode(&normalized_path), MountMode::Ignore));
@@ -109,9 +173,6 @@ pub(super) fn first_blocked_critical_path(
                 return Ok(Some(relative_path));
             }
 
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
             if file_type.is_dir() {
                 queue.push_back((entry.path(), relative_path, depth + 1));
             }
@@ -149,6 +210,33 @@ fn normalize_partition_alias(path: &Path) -> PathBuf {
     normalized
 }
 
+fn is_partition_root(path: &Path) -> bool {
+    if path == Path::new("system") {
+        return true;
+    }
+    defs::MANAGED_PARTITIONS
+        .iter()
+        .any(|partition| path == Path::new(partition))
+}
+
+fn is_critical_replace_marker(path: &Path) -> bool {
+    if path.file_name().and_then(|name| name.to_str()) != Some(".replace") {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+
+    CRITICAL_REPLACE_PARENTS
+        .iter()
+        .map(Path::new)
+        .any(|critical_parent| parent == critical_parent)
+        || CRITICAL_TREE_ROOTS
+            .iter()
+            .map(Path::new)
+            .any(|root| parent == root || parent.starts_with(root))
+}
+
 fn is_critical_payload_path(path: &Path) -> bool {
     if CRITICAL_TREE_ROOTS
         .iter()
@@ -158,18 +246,25 @@ fn is_critical_payload_path(path: &Path) -> bool {
         return true;
     }
 
+    let path_text = path.to_string_lossy().to_ascii_lowercase();
+    if CRITICAL_EXACT_FILES
+        .iter()
+        .any(|critical| path_text == *critical)
+        || CRITICAL_FILE_PREFIXES
+            .iter()
+            .any(|prefix| path_text.starts_with(prefix))
+    {
+        return true;
+    }
+
     let in_sensitive_area = SENSITIVE_AREAS
         .iter()
         .map(Path::new)
         .any(|root| path.starts_with(root));
-    if !in_sensitive_area {
-        return false;
-    }
-
-    let path_text = path.to_string_lossy().to_ascii_lowercase();
-    SENSITIVE_IDENTIFIERS
-        .iter()
-        .any(|identifier| path_text.contains(identifier))
+    in_sensitive_area
+        && SENSITIVE_IDENTIFIERS
+            .iter()
+            .any(|identifier| path_text.contains(identifier))
 }
 
 #[cfg(test)]
@@ -188,10 +283,14 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_firmware_and_radio_roots() {
+    fn recognizes_firmware_radio_and_vendor_control_roots() {
         for path in [
             "vendor/firmware/image.mbn",
+            "vendor/bt_firmware/image.bin",
             "vendor/rfs/msm/mpss/readonly/firmware",
+            "vendor/etc/init/hw/init.qcom.rc",
+            "vendor/etc/vintf/manifest.xml",
+            "vendor/etc/selinux/vendor_sepolicy.cil",
             "odm/etc/bluetooth/bt_vendor.conf",
             "my_carrier/etc/radio/config.xml",
         ] {
@@ -205,12 +304,35 @@ mod tests {
             normalize_partition_alias(Path::new("system/vendor/firmware/modem.mbn")),
             PathBuf::from("vendor/firmware/modem.mbn")
         );
-        assert!(is_critical_payload_path(Path::new(
-            "vendor/bin/hw/android.hardware.radio-service"
-        )));
-        assert!(is_critical_payload_path(Path::new(
-            "vendor/lib64/vendor.oplus.hardware.bluetooth-V1-ndk.so"
-        )));
+        for path in [
+            "vendor/bin/hw/android.hardware.radio-service",
+            "vendor/lib64/vendor.oplus.hardware.bluetooth-V1-ndk.so",
+            "vendor/lib64/libbt-vendor.so",
+            "vendor/etc/permissions/android.hardware.telephony.xml",
+        ] {
+            assert!(is_critical_payload_path(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn recognizes_fstab_build_property_and_partition_replacement_controls() {
+        for path in [
+            "vendor/etc/fstab.qcom",
+            "vendor/build.prop",
+            "odm/ueventd.rc",
+        ] {
+            assert!(is_critical_payload_path(Path::new(path)), "{path}");
+        }
+        for path in [
+            "system/.replace",
+            "vendor/.replace",
+            "vendor/etc/.replace",
+            "vendor/lib64/.replace",
+            "odm/.replace",
+            "my_carrier/etc/.replace",
+        ] {
+            assert!(is_critical_replace_marker(Path::new(path)), "{path}");
+        }
     }
 
     #[test]
@@ -235,6 +357,32 @@ mod tests {
         assert_eq!(
             first_blocked_critical_path(&module, &empty_rules()).unwrap(),
             Some(PathBuf::from("vendor/firmware"))
+        );
+    }
+
+    #[test]
+    fn blocks_partition_root_symlink_without_following_it() {
+        let temp = TempDir::new().unwrap();
+        let module = temp.path().join("module");
+        fs::create_dir_all(&module).unwrap();
+        symlink("/outside/vendor", module.join("vendor")).unwrap();
+
+        assert_eq!(
+            first_blocked_critical_path(&module, &empty_rules()).unwrap(),
+            Some(PathBuf::from("vendor"))
+        );
+    }
+
+    #[test]
+    fn blocks_partition_root_replace_marker() {
+        let temp = TempDir::new().unwrap();
+        let module = temp.path().join("module");
+        fs::create_dir_all(module.join("vendor")).unwrap();
+        fs::write(module.join("vendor/.replace"), b"").unwrap();
+
+        assert_eq!(
+            first_blocked_critical_path(&module, &empty_rules()).unwrap(),
+            Some(PathBuf::from("vendor/.replace"))
         );
     }
 
