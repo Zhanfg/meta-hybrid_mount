@@ -28,7 +28,7 @@ fn config_backup_path(path: &Path, index: Option<usize>) -> std::path::PathBuf {
         .map(|e| format!("{}.bak", e.to_string_lossy()))
         .unwrap_or_else(|| "bak".to_string());
     let ext = match index {
-        Some(index) => format!("{ext}.bak.{index}"),
+        Some(index) => format!("{ext}.{index}"),
         None => ext,
     };
     path.with_extension(ext)
