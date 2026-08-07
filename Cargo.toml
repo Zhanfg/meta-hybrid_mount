@@ -14,7 +14,7 @@ description = "Mount orchestration metamodule for KernelSU and APatch"
 authors = ["Hybrid Mount Developers"]
 license = "GPL-3.0-only"
 readme = "README.md"
-repository = "https://github.com/Zhanfg/meta-hybrid_mount"
+repository = "https://github.com/Zhanfg/meta-rehybrid_mount"
 
 [package.metadata.hybrid_mount]
 name = "Hybrid Mount Fork"
