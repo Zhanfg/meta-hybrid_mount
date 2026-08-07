@@ -7,6 +7,8 @@ pub mod conf;
 pub mod core;
 pub mod defs;
 pub mod domain;
+#[cfg(feature = "kasumi")]
+pub mod kasumi_runtime_safety;
 pub mod mount;
 pub mod partitions;
 pub mod path_safety;
