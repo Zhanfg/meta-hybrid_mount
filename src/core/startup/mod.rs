@@ -124,7 +124,9 @@ where
     if config.kasumi.enabled {
         let mut kasumi_ready = false;
 
-        match sys::lkm::autoload_if_needed(&config.kasumi) {
+        match sys::kmi_guard::validate_override(&config.kasumi)
+            .and_then(|()| sys::lkm::autoload_if_needed(&config.kasumi))
+        {
             Ok(loaded) => {
                 if loaded {
                     lkm_guard.arm();

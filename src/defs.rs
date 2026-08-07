@@ -34,6 +34,18 @@ pub const REPLACE_DIR_FILE_NAME: &str = ".replace";
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub const REPLACE_DIR_XATTR: &str = "trusted.overlay.opaque";
 
+/// Mount roots that must remain visible in KernelSU child namespaces.
+///
+/// Detaching these library trees after zygote or vendor services have mapped
+/// shared objects can crash consumers mid-flight. Bluetooth, radio, graphics,
+/// and integrity components commonly resolve dependencies from these roots.
+pub const IGNORE_UNMOUNT_PARTITIONS: &[&str] = &[
+    "/vendor/lib",
+    "/vendor/lib64",
+    "/system/lib",
+    "/system/lib64",
+];
+
 pub const MANAGED_PARTITIONS: &[&str] = &[
     "odm",
     "product",
@@ -58,3 +70,21 @@ pub const MANAGED_PARTITIONS: &[&str] = &[
 ];
 
 pub const MAX_MERGE_JSON_DEPTH: usize = 64;
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn writable_images_stay_inside_private_data_directory() {
+        for image in [MODULES_IMG_FILE, KASUMI_IMG_FILE] {
+            let path = Path::new(image);
+            assert!(path.starts_with(HYBRID_MOUNT_DIR), "{image}");
+            assert!(!path.starts_with("/dev"), "{image}");
+            assert!(!path.starts_with("/sys"), "{image}");
+            assert!(!path.starts_with("/proc"), "{image}");
+        }
+    }
+}

@@ -6,5 +6,7 @@ pub mod fs;
 #[cfg(feature = "kasumi")]
 pub mod kasumi;
 #[cfg(feature = "kasumi")]
+pub(crate) mod kmi_guard;
+#[cfg(feature = "kasumi")]
 pub mod lkm;
 pub mod mount;

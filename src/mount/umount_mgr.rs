@@ -129,6 +129,13 @@ impl Drop for UmountRegistrationGuard {
     }
 }
 
+fn is_ignored_partition(target: &Path) -> bool {
+    crate::defs::IGNORE_UNMOUNT_PARTITIONS
+        .iter()
+        .map(Path::new)
+        .any(|ignored| target == ignored || target.starts_with(ignored))
+}
+
 pub fn send_umountable<P>(target: P) -> Result<()>
 where
     P: AsRef<Path>,
@@ -145,10 +152,21 @@ where
             return Ok(());
         }
 
+        let target = target.as_ref();
+        if is_ignored_partition(target) {
+            crate::scoped_log!(
+                debug,
+                "umount_mgr",
+                "registration skipped: target={}, reason=protected_library_root",
+                target.display()
+            );
+            return Ok(());
+        }
+
         PENDING
             .lock()
             .map_err(|_| anyhow::anyhow!("Failed to lock pending umount targets"))?
-            .insert(target.as_ref().to_path_buf());
+            .insert(target.to_path_buf());
         Ok(())
     }
 }
@@ -329,5 +347,48 @@ mod tests {
         assert_eq!(cmd.arg, 0x1234);
         assert_eq!(cmd.flags, 0);
         assert_eq!(cmd.mode, 2);
+    }
+
+    #[test]
+    fn protects_exact_system_and_vendor_library_roots() {
+        for path in [
+            "/system/lib",
+            "/system/lib64",
+            "/vendor/lib",
+            "/vendor/lib64",
+        ] {
+            assert!(is_ignored_partition(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn protects_descendants_of_system_and_vendor_library_roots() {
+        for path in [
+            "/system/lib/libbinder.so",
+            "/system/lib64/libbinder.so",
+            "/vendor/lib/hw/bluetooth.default.so",
+            "/vendor/lib64/hw/android.hardware.radio.so",
+        ] {
+            assert!(is_ignored_partition(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn does_not_protect_similar_prefix_siblings() {
+        for path in [
+            "/system/library",
+            "/system/lib64_other",
+            "/vendor/lib_extra",
+            "/vendor/library",
+        ] {
+            assert!(!is_ignored_partition(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn unrelated_mount_targets_remain_registerable() {
+        for path in ["/system/etc", "/product/app", "/vendor/etc", "/odm/etc"] {
+            assert!(!is_ignored_partition(Path::new(path)), "{path}");
+        }
     }
 }
