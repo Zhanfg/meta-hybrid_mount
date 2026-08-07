@@ -56,6 +56,8 @@ jobs:
         run: bash scripts/test-archive-safety.sh
       - name: Test metamodule safety helpers
         run: bash scripts/test-metasafety.sh
+      - name: Test metamodule hot-install payload classification
+        run: bash scripts/test-metainstall-payload-safety.sh
       - name: Test private data safety
         run: bash scripts/test-private-data-safety.sh
       - name: Test full installer transaction
