@@ -5,6 +5,7 @@
 pub mod discovery;
 pub mod listing;
 mod safety;
+mod special_nodes;
 
 use std::fs;
 
@@ -28,6 +29,32 @@ pub fn scan_snapshot(config: &Config) -> Result<InventorySnapshot> {
     let mut quarantined = 0usize;
 
     for module in snapshot.modules {
+        match special_nodes::first_blocked_special_node(&module.source_path, &module.rules) {
+            Ok(Some(path)) => {
+                quarantined += 1;
+                crate::scoped_log!(
+                    error,
+                    "inventory:safety",
+                    "module quarantined: id={}, path={}, reason=unsafe_special_filesystem_node; only regular files, directories, symlinks and 0:0 whiteouts are accepted",
+                    module.id,
+                    path.display()
+                );
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                quarantined += 1;
+                crate::scoped_log!(
+                    error,
+                    "inventory:safety",
+                    "module quarantined: id={}, reason=special_node_scan_failed, error={:#}",
+                    module.id,
+                    error
+                );
+                continue;
+            }
+        }
+
         match safety::first_blocked_critical_path(&module.source_path, &module.rules) {
             Ok(None) => safe_modules.push(module),
             Ok(Some(path)) => {
@@ -57,7 +84,7 @@ pub fn scan_snapshot(config: &Config) -> Result<InventorySnapshot> {
         crate::scoped_log!(
             warn,
             "inventory:safety",
-            "critical payload quarantine complete: quarantined={}, active={}",
+            "module safety quarantine complete: quarantined={}, active={}",
             quarantined,
             safe_modules.len()
         );
