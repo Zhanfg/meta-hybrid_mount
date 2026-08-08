@@ -1,7 +1,7 @@
 {
     "metamodule": true,
     "summary": "Next Generation Mounting Metamodule with OverlayFS,Magic Mount and Kasumi.",
-    "sourceUrl": "https://github.com/Hybrid-Mount/meta-hybrid_mount",
+    "sourceUrl": "https://github.com/Zhanfg/meta-rehybrid_mount",
     "additionalAuthors": [
         {
             "type": "add",
