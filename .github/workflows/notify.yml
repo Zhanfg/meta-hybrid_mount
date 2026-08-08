@@ -37,7 +37,7 @@ jobs:
     name: Notify crate
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci@sha256:c7df09521257f5b5e78e20ffa4928eb5ec905fa324523a36723f625b496b8e22
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

@@ -52,8 +52,10 @@ jobs:
           while IFS= read -r -d '' script; do
             sh -n "$script"
           done < <(find module -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
-      - name: Check device verifier shell syntax
-        run: sh -n scripts/device-postflash-verify.sh
+      - name: Check device verification shell syntax
+        run: |
+          sh -n scripts/device-preflash-snapshot.sh
+          sh -n scripts/device-postflash-verify.sh
       - name: Test archive safety extraction
         run: bash scripts/test-archive-safety.sh
       - name: Test metamodule safety helpers
