@@ -1,0 +1,36 @@
+name: VFS rustfmt export
+
+on:
+  push:
+    branches:
+      - 'integration/vfs-nomount-20260809'
+    paths:
+      - 'src/**'
+      - '.github/workflows/vfs-format-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  format-export:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci@sha256:c7df09521257f5b5e78e20ffa4928eb5ec905fa324523a36723f625b496b8e22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Trust checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Format Rust sources
+        run: cargo fmt --all
+      - name: Export formatted Rust tree
+        uses: actions/upload-artifact@v7
+        with:
+          name: vfs-rustfmt-${{ github.sha }}
+          path: src
+          compression-level: 0
+          if-no-files-found: error
