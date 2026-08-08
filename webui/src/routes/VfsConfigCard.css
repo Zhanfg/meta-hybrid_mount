@@ -1,0 +1,97 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+.vfs-config-section {
+  margin-top: 16px;
+}
+
+.vfs-card-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.vfs-toggle {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--radius-xl);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+}
+
+.vfs-toggle.active {
+  border-color: transparent;
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.vfs-toggle:disabled,
+.mode-item:disabled,
+.vfs-branch-options button:disabled {
+  opacity: 0.55;
+}
+
+.vfs-branch-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.vfs-branch-options {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.vfs-branch-options button {
+  min-width: 36px;
+  height: 36px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  font-weight: 600;
+}
+
+.vfs-branch-options button.selected {
+  border-color: transparent;
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.vfs-reboot-note {
+  margin-top: 14px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .vfs-card-header,
+  .vfs-branch-control {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .vfs-toggle {
+    width: 100%;
+  }
+
+  .vfs-branch-options {
+    width: 100%;
+  }
+
+  .vfs-branch-options button {
+    flex: 1;
+  }
+}
