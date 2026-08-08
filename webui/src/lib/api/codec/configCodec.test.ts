@@ -25,8 +25,18 @@ describe("config codec", () => {
     expect(normalizeConfig(DEFAULT_CONFIG)).toEqual(DEFAULT_CONFIG);
   });
 
-  it("rejects missing config fields", () => {
+  it("still rejects structurally incomplete configs", () => {
     expect(() => appConfigSchema.parse({})).toThrow();
+  });
+
+  it("fills VFS defaults for configs created before VFS integration", () => {
+    const { vfs: _vfs, ...legacy } = DEFAULT_CONFIG;
+    expect(normalizeConfig(legacy).vfs).toEqual(DEFAULT_CONFIG.vfs);
+  });
+
+  it("fills Kasumi defaults when Lite/Nano serialization omits Kasumi", () => {
+    const { kasumi: _kasumi, ...lite } = DEFAULT_CONFIG;
+    expect(normalizeConfig(lite).kasumi).toEqual(DEFAULT_CONFIG.kasumi);
   });
 
   it("accepts snake-case custom mounts and rejects the old camel-case field", () => {
