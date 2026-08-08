@@ -44,6 +44,7 @@ const createModuleStore = () => {
 
   const modeStats = createMemo((): ModeStats => {
     const stats: ModeStats = {
+      vfs: 0,
       overlay: 0,
       magic: 0,
       kasumi: 0,

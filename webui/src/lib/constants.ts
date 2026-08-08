@@ -53,6 +53,7 @@ export const DEFAULT_CONFIG = {
   disable_umount: false,
   overlay_mode: "ext4",
   default_mode: "overlay",
+  vfs: { enabled: false, backend: "auto", max_branches: 5 },
   custom_mounts: [],
   rules: {},
   kasumi: DEFAULT_KASUMI_CONFIG,

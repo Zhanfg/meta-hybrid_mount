@@ -25,13 +25,14 @@ import {
   runtimeStateSchema,
 } from "../schemas";
 import { buildModeStats, buildMountedCount } from "../codec/runtimeCodec";
+import { normalizeConfig } from "../codec/configCodec";
 
 export async function init(): Promise<InitPayload> {
   const raw = await runDaemonCommand({ type: "init" }, PATHS.BINARY);
   const payload = initPayloadSchema.parse(raw);
   return {
     status: payload.status,
-    config: payload.config,
+    config: normalizeConfig(payload.config),
     version: payload.version.version,
     kasumi_status: payload.kasumi_status,
     system_info: payload.system_info,

@@ -188,10 +188,10 @@ export const appConfigSchema = z
     overlay_mode: overlayModeSchema,
     disable_umount: z.boolean(),
     default_mode: mountModeSchema,
-    vfs: vfsConfigSchema,
+    vfs: vfsConfigSchema.optional(),
     custom_mounts: z.array(customBindMountSchema),
     rules: z.record(z.string(), moduleRulesSchema),
-    kasumi: kasumiConfigSchema,
+    kasumi: kasumiConfigSchema.optional(),
   })
   .strict();
 

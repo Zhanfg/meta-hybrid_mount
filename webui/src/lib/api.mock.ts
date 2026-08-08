@@ -297,6 +297,7 @@ function buildMockModules(): Module[] {
 
 function buildModeStats(): ModeStats {
   return {
+    vfs: 0,
     overlay: 1,
     magic: 1,
     kasumi: 1,
@@ -311,6 +312,9 @@ function buildMockRuntimeState(): RuntimeStatePayload {
     pid: 1234,
     storage_mode: "tmpfs",
     mount_point: "/data/adb/hybrid-mount/mnt",
+    vfs_modules: [],
+    vfs_backend: null,
+    vfs_fallback_modules: [],
     overlay_modules: ["overlay_module_2"],
     magic_modules: ["magisk_module_1"],
     kasumi_modules: ["playintegrityfix"],
@@ -328,9 +332,11 @@ function buildMockRuntimeState(): RuntimeStatePayload {
       dirs_mounted: 0,
       symlinks_created: 0,
       overlayfs_mounts: 1,
+      vfs_mounts: 0,
       ignored_entries: 0,
     },
     mode_stats: {
+      vfs: 0,
       overlayfs: 1,
       magicmount: 1,
       kasumi: 1,
@@ -402,6 +408,8 @@ export const MockAPI: AppAPI = {
       type: "ext4",
       modeStats: buildModeStats(),
       mountedCount: 3,
+      vfsBackend: null,
+      vfsFallbackCount: 0,
     };
   },
 
