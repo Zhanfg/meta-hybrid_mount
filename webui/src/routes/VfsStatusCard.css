@@ -1,0 +1,50 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+.vfs-status-card {
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: var(--radius-2xl);
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+}
+
+.vfs-status-heading {
+  margin-bottom: 14px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.vfs-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.vfs-status-item {
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--radius-xl);
+  background: var(--md-sys-color-surface-container-high);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vfs-status-item span {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 12px;
+}
+
+.vfs-status-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .vfs-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
