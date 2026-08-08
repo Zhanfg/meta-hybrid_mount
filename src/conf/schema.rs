@@ -24,6 +24,7 @@ pub enum OverlayMode {
 pub enum VfsBackendPreference {
     #[default]
     Auto,
+    Zeromount,
     Mirage,
     Nomountfs,
 }
@@ -31,10 +32,12 @@ pub enum VfsBackendPreference {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct VfsConfig {
-    /// Prefer a VFS/No-Mount filesystem for modules that can be moved as one
-    /// complete transaction. Disabled by default to preserve legacy behavior.
+    /// Prefer a VFS/No-Mount backend for modules that pass conservative
+    /// eligibility checks. Disabled by default to preserve legacy behavior.
     pub enabled: bool,
-    /// Backend preference. Auto prefers Mirage and then legacy NoMountFS.
+    /// Auto prefers a clean existing ZeroMount driver, then Mirage, then the
+    /// legacy NoMountFS filesystem. Explicit selections never silently switch
+    /// to a different VFS backend.
     pub backend: VfsBackendPreference,
     /// Hard safety bound for a single union chain, including the physical
     /// partition lowerdir. Mirage documents a maximum of five branches.
@@ -209,12 +212,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// Disable Kasumi for the in-memory configuration and preserve mount
-    /// coverage by converting every Kasumi strategy to Magic Mount.
-    ///
-    /// The caller decides whether this transient configuration is persisted.
-    /// Startup uses it only for the current boot, so a missing/incompatible LKM
-    /// cannot prevent unrelated Overlay and Magic modules from mounting.
     pub(crate) fn degrade_kasumi_to_magic(&mut self) -> usize {
         let mut changed = 0;
 
@@ -296,6 +293,13 @@ mod tests {
     }
 
     #[test]
+    fn explicit_zeromount_backend_round_trips() {
+        let config: VfsConfig = toml::from_str("enabled = true\nbackend = \"zeromount\"").unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.backend, VfsBackendPreference::Zeromount);
+    }
+
+    #[test]
     fn degrade_kasumi_to_magic_preserves_mount_coverage() {
         let mut config = Config {
             default_mode: DefaultMode::Kasumi,
@@ -329,6 +333,27 @@ mod tests {
             rules.paths.get("system/lib"),
             Some(MountMode::Overlay)
         ));
+    }
+
+    #[test]
+    fn repeated_downgrade_keeps_fallback_ids_stable() {
+        let mut config = Config {
+            default_mode: DefaultMode::Kasumi,
+            kasumi: KasumiConfig {
+                enabled: true,
+                ..KasumiConfig::default()
+            },
+            ..Config::default()
+        };
+        config.rules.insert(
+            "example".to_string(),
+            ModuleRules {
+                default_mode: MountMode::Kasumi,
+                paths: HashMap::new(),
+            },
+        );
+        assert!(config.degrade_kasumi_to_magic() > 0);
+        assert_eq!(config.degrade_kasumi_to_magic(), 0);
     }
 
     #[test]

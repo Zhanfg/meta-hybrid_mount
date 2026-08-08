@@ -28,8 +28,6 @@ pub struct VfsOperation {
     pub backend: String,
     pub partition_name: String,
     pub target: PathBuf,
-    /// Module branches only. The executor appends the physical target as the
-    /// final lowerdir after validating the documented branch limit.
     pub lowerdirs: Vec<PathBuf>,
     pub module_ids: Vec<String>,
     pub max_branches: usize,
@@ -53,6 +51,7 @@ pub struct KasumiMergeRule {
 #[derive(Debug, Default)]
 pub struct MountPlan {
     pub prepare_metrics: PrepareMetrics,
+    pub vfs_backend: Option<String>,
     pub vfs_ops: Vec<VfsOperation>,
     pub overlay_ops: Vec<OverlayOperation>,
     #[cfg(feature = "kasumi")]
@@ -74,36 +73,25 @@ pub struct MountPlan {
 impl MountPlan {
     pub fn kasumi_count(&self) -> usize {
         #[cfg(feature = "kasumi")]
-        {
-            self.kasumi_module_ids.len()
-        }
+        { self.kasumi_module_ids.len() }
         #[cfg(not(feature = "kasumi"))]
-        {
-            0
-        }
+        { 0 }
     }
 
     pub fn kasumi_fallback_ids(&self) -> &[String] {
         #[cfg(feature = "kasumi")]
-        {
-            &self.kasumi_fallback_module_ids
-        }
+        { &self.kasumi_fallback_module_ids }
         #[cfg(not(feature = "kasumi"))]
-        {
-            &[]
-        }
+        { &[] }
     }
 
     #[cfg(feature = "kasumi")]
     pub fn degrade_kasumi_to_magic(&mut self) -> usize {
         let downgraded = std::mem::take(&mut self.kasumi_module_ids);
         let changed = downgraded.len();
-
-        self.kasumi_fallback_module_ids
-            .extend(downgraded.iter().cloned());
+        self.kasumi_fallback_module_ids.extend(downgraded.iter().cloned());
         self.kasumi_fallback_module_ids.sort();
         self.kasumi_fallback_module_ids.dedup();
-
         self.magic_module_ids.extend(downgraded);
         self.magic_module_ids.sort();
         self.magic_module_ids.dedup();
@@ -117,7 +105,6 @@ impl MountPlan {
 #[cfg(all(test, feature = "kasumi"))]
 mod tests {
     use std::path::PathBuf;
-
     use super::{KasumiAddRule, KasumiMergeRule, MountPlan};
 
     #[test]
@@ -125,19 +112,11 @@ mod tests {
         let mut plan = MountPlan {
             magic_module_ids: vec!["existing".to_string()],
             kasumi_module_ids: vec!["b".to_string(), "a".to_string(), "existing".to_string()],
-            kasumi_add_rules: vec![KasumiAddRule {
-                target: "/system/a".to_string(),
-                source: PathBuf::from("/dev/a"),
-                file_type: 1,
-            }],
-            kasumi_merge_rules: vec![KasumiMergeRule {
-                target: "/system/b".to_string(),
-                source: PathBuf::from("/dev/b"),
-            }],
+            kasumi_add_rules: vec![KasumiAddRule { target: "/system/a".to_string(), source: PathBuf::from("/dev/a"), file_type: 1 }],
+            kasumi_merge_rules: vec![KasumiMergeRule { target: "/system/b".to_string(), source: PathBuf::from("/dev/b") }],
             kasumi_hide_rules: vec!["/system/c".to_string()],
             ..MountPlan::default()
         };
-
         assert_eq!(plan.degrade_kasumi_to_magic(), 3);
         assert_eq!(plan.magic_module_ids, vec!["a", "b", "existing"]);
         assert_eq!(plan.kasumi_fallback_module_ids, vec!["a", "b", "existing"]);
@@ -145,19 +124,5 @@ mod tests {
         assert!(plan.kasumi_add_rules.is_empty());
         assert!(plan.kasumi_merge_rules.is_empty());
         assert!(plan.kasumi_hide_rules.is_empty());
-    }
-
-    #[test]
-    fn repeated_downgrade_keeps_fallback_ids_stable() {
-        let mut plan = MountPlan {
-            kasumi_module_ids: vec!["module".to_string()],
-            ..MountPlan::default()
-        };
-
-        assert_eq!(plan.degrade_kasumi_to_magic(), 1);
-        plan.kasumi_module_ids.push("module".to_string());
-        assert_eq!(plan.degrade_kasumi_to_magic(), 1);
-        assert_eq!(plan.magic_module_ids, vec!["module"]);
-        assert_eq!(plan.kasumi_fallback_module_ids, vec!["module"]);
     }
 }

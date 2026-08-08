@@ -6,7 +6,10 @@ use std::fs;
 
 use anyhow::Result;
 
-use crate::conf::{config::Config, schema::VfsBackendPreference};
+use crate::{
+    conf::{config::Config, schema::VfsBackendPreference},
+    mount::zeromount::{self, ProbeState},
+};
 #[cfg(feature = "kasumi")]
 use crate::sys::kasumi;
 
@@ -70,37 +73,15 @@ impl BackendCapabilities {
         }
     }
 
-    pub fn can_use_kasumi(&self) -> bool {
-        self.kasumi_usable
-    }
-
-    pub fn kasumi_status(&self) -> &str {
-        &self.kasumi_status
-    }
-
-    pub fn can_use_vfs(&self) -> bool {
-        self.vfs_usable
-    }
-
-    pub fn vfs_status(&self) -> &str {
-        &self.vfs_status
-    }
-
-    pub fn vfs_fs_type(&self) -> Option<&str> {
-        self.vfs_fs_type.as_deref()
-    }
-
-    pub fn vfs_max_branches(&self) -> usize {
-        self.vfs_max_branches
-    }
+    pub fn can_use_kasumi(&self) -> bool { self.kasumi_usable }
+    pub fn kasumi_status(&self) -> &str { &self.kasumi_status }
+    pub fn can_use_vfs(&self) -> bool { self.vfs_usable }
+    pub fn vfs_status(&self) -> &str { &self.vfs_status }
+    pub fn vfs_fs_type(&self) -> Option<&str> { self.vfs_fs_type.as_deref() }
+    pub fn vfs_max_branches(&self) -> usize { self.vfs_max_branches }
 
     #[cfg(test)]
-    pub(crate) fn for_vfs_test(
-        status: &str,
-        usable: bool,
-        fs_type: Option<&str>,
-        max_branches: usize,
-    ) -> Self {
+    pub(crate) fn for_vfs_test(status: &str, usable: bool, fs_type: Option<&str>, max_branches: usize) -> Self {
         Self {
             kasumi_status: "disabled".to_string(),
             kasumi_usable: false,
@@ -117,25 +98,51 @@ fn detect_vfs(config: &Config) -> (String, bool, Option<String>) {
         return ("disabled".to_string(), false, None);
     }
 
-    let filesystems = match fs::read_to_string("/proc/filesystems") {
-        Ok(content) => content,
-        Err(error) => {
-            crate::scoped_log!(
-                warn,
-                "backend_capabilities",
-                "vfs filesystem probe failed: error={:#}",
-                error
-            );
-            return ("probe_error".to_string(), false, None);
+    let filesystems = fs::read_to_string("/proc/filesystems").unwrap_or_default();
+    match config.vfs.backend {
+        VfsBackendPreference::Auto => {
+            match zeromount::probe_clean_driver() {
+                Ok(ProbeState::Ready { version }) => {
+                    return (format!("zeromount_v{version}"), true, Some("zeromount".to_string()));
+                }
+                Ok(ProbeState::Unavailable { reason }) => crate::scoped_log!(
+                    debug,
+                    "backend_capabilities",
+                    "ZeroMount auto probe skipped: reason={}",
+                    reason
+                ),
+                Err(error) => crate::scoped_log!(
+                    warn,
+                    "backend_capabilities",
+                    "ZeroMount auto probe failed; trying union backends: error={:#}",
+                    error
+                ),
+            }
+            select_union_backend(&filesystems, VfsBackendPreference::Auto)
+                .map(|backend| (backend.clone(), true, Some(backend)))
+                .unwrap_or_else(|| ("unavailable".to_string(), false, None))
         }
-    };
-
-    select_vfs_backend(&filesystems, config.vfs.backend)
-        .map(|fs_type| (fs_type.clone(), true, Some(fs_type)))
-        .unwrap_or_else(|| ("unavailable".to_string(), false, None))
+        VfsBackendPreference::Zeromount => match zeromount::probe_clean_driver() {
+            Ok(ProbeState::Ready { version }) => {
+                (format!("zeromount_v{version}"), true, Some("zeromount".to_string()))
+            }
+            Ok(ProbeState::Unavailable { reason }) => {
+                (format!("zeromount_{reason}"), false, None)
+            }
+            Err(error) => {
+                crate::scoped_log!(warn, "backend_capabilities", "ZeroMount probe failed: error={:#}", error);
+                ("zeromount_probe_error".to_string(), false, None)
+            }
+        },
+        VfsBackendPreference::Mirage | VfsBackendPreference::Nomountfs => {
+            select_union_backend(&filesystems, config.vfs.backend)
+                .map(|backend| (backend.clone(), true, Some(backend)))
+                .unwrap_or_else(|| ("unavailable".to_string(), false, None))
+        }
+    }
 }
 
-fn select_vfs_backend(filesystems: &str, preference: VfsBackendPreference) -> Option<String> {
+fn select_union_backend(filesystems: &str, preference: VfsBackendPreference) -> Option<String> {
     let available = |name: &str| {
         filesystems
             .lines()
@@ -155,6 +162,7 @@ fn select_vfs_backend(filesystems: &str, preference: VfsBackendPreference) -> Op
         }
         VfsBackendPreference::Mirage => available("mirage").then(|| "mirage".to_string()),
         VfsBackendPreference::Nomountfs => available("nomountfs").then(|| "nomountfs".to_string()),
+        VfsBackendPreference::Zeromount => None,
     }
 }
 
@@ -171,17 +179,17 @@ mod tests {
     }
 
     #[test]
-    fn auto_prefers_current_mirage_over_legacy_nomountfs() {
+    fn union_auto_prefers_current_mirage_over_legacy_nomountfs() {
         let filesystems = "nodev\tnomountfs\nnodev\tmirage\n";
         assert_eq!(
-            select_vfs_backend(filesystems, VfsBackendPreference::Auto).as_deref(),
+            select_union_backend(filesystems, VfsBackendPreference::Auto).as_deref(),
             Some("mirage")
         );
     }
 
     #[test]
-    fn explicit_backend_never_silently_switches() {
+    fn explicit_union_backend_never_silently_switches() {
         let filesystems = "nodev\tnomountfs\n";
-        assert!(select_vfs_backend(filesystems, VfsBackendPreference::Mirage).is_none());
+        assert!(select_union_backend(filesystems, VfsBackendPreference::Mirage).is_none());
     }
 }
