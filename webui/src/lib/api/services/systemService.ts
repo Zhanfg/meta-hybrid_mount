@@ -46,6 +46,8 @@ export async function getStorageUsage(): Promise<StorageStatus> {
     type: state.storage_mode,
     modeStats: buildModeStats(state),
     mountedCount: buildMountedCount(state),
+    vfsBackend: state.vfs_backend,
+    vfsFallbackCount: state.vfs_fallback_modules.length,
   };
 }
 
