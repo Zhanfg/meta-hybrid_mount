@@ -18,6 +18,12 @@ import { z } from "zod/v4";
 
 export const mountModeSchema = z.enum(["overlay", "magic", "kasumi", "ignore"]);
 export const overlayModeSchema = z.enum(["tmpfs", "ext4"]);
+export const vfsBackendSchema = z.enum([
+  "auto",
+  "zeromount",
+  "mirage",
+  "nomountfs",
+]);
 export const kasumiUnameModeSchema = z.enum(["scoped", "global"]);
 
 export const moduleRulesSchema = z
@@ -161,6 +167,16 @@ export const kasumiConfigSchema = z
 
 export type KasumiConfigPayload = z.infer<typeof kasumiConfigSchema>;
 
+export const vfsConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    backend: vfsBackendSchema,
+    max_branches: z.number().int().min(2).max(5),
+  })
+  .strict();
+
+export type VfsConfigPayload = z.infer<typeof vfsConfigSchema>;
+
 export const customBindMountSchema = z
   .object({ source: z.string(), target: z.string() })
   .strict();
@@ -172,6 +188,7 @@ export const appConfigSchema = z
     overlay_mode: overlayModeSchema,
     disable_umount: z.boolean(),
     default_mode: mountModeSchema,
+    vfs: vfsConfigSchema,
     custom_mounts: z.array(customBindMountSchema),
     rules: z.record(z.string(), moduleRulesSchema),
     kasumi: kasumiConfigSchema,
@@ -185,6 +202,7 @@ export const runtimeModeStatsSchema = z
     overlayfs: z.number().int().nonnegative(),
     magicmount: z.number().int().nonnegative(),
     kasumi: z.number().int().nonnegative(),
+    vfs: z.number().int().nonnegative(),
     blacklisted: z.number().int().nonnegative(),
   })
   .strict();
@@ -199,6 +217,7 @@ export const runtimeMountStatsSchema = z
     dirs_mounted: z.number().int().nonnegative(),
     symlinks_created: z.number().int().nonnegative(),
     overlayfs_mounts: z.number().int().nonnegative(),
+    vfs_mounts: z.number().int().nonnegative(),
     ignored_entries: z.number().int().nonnegative(),
   })
   .strict();
@@ -237,6 +256,9 @@ export const runtimeStateSchema = z
     pid: z.number().int().nonnegative(),
     storage_mode: z.enum(["tmpfs", "ext4"]),
     mount_point: z.string().min(1),
+    vfs_modules: z.array(z.string()),
+    vfs_backend: z.string().nullable(),
+    vfs_fallback_modules: z.array(z.string()),
     overlay_modules: z.array(z.string()),
     magic_modules: z.array(z.string()),
     kasumi_modules: z.array(z.string()),
