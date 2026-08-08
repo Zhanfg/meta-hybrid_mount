@@ -68,33 +68,56 @@ pub fn select_vfs_modules(
         }
     }
 
-    for partition in managed_partitions {
-        let mut vfs_ids = Vec::new();
-        let mut other_backend_present = false;
-        for module in modules {
-            if !module.source_path.join(partition).is_dir() {
+    // Compute a fixed-point fallback set. A module that becomes unsafe on one
+    // partition must not remain a VFS participant on another partition while
+    // its fallback backend touches that same target. Propagate the downgrade
+    // across every shared managed partition until no new module is added.
+    loop {
+        let before = fallback.len();
+
+        for partition in managed_partitions {
+            let participants = modules
+                .iter()
+                .filter(|module| {
+                    candidate_set.contains(module.id.as_str())
+                        && module.source_path.join(partition).is_dir()
+                })
+                .collect::<Vec<_>>();
+            if participants.is_empty() {
                 continue;
             }
-            if candidate_set.contains(module.id.as_str()) && !fallback.contains(&module.id) {
-                vfs_ids.push(module.id.clone());
+
+            let noncandidate_present = modules.iter().any(|module| {
+                !candidate_set.contains(module.id.as_str())
+                    && module.source_path.join(partition).is_dir()
+            });
+            let fallback_present = participants
+                .iter()
+                .any(|module| fallback.contains(&module.id));
+            let target = system_root.join(partition);
+
+            let unsafe_partition = if backend == "zeromount" {
+                // First safe ZeroMount generation: only one REHYBIRD VFS
+                // module may own a partition. This avoids ambiguous new-dir
+                // merging and duplicate virtual rules between modules.
+                !target.exists()
+                    || noncandidate_present
+                    || fallback_present
+                    || participants.len() != 1
             } else {
-                other_backend_present = true;
+                !target.exists()
+                    || noncandidate_present
+                    || fallback_present
+                    || participants.len() > max_module_branches
+            };
+
+            if unsafe_partition {
+                fallback.extend(participants.into_iter().map(|module| module.id.clone()));
             }
         }
-        if vfs_ids.is_empty() {
-            continue;
-        }
-        let target = system_root.join(partition);
-        let unsafe_partition = if backend == "zeromount" {
-            // First safe ZeroMount generation: only one REHYBIRD VFS module may
-            // own a partition. This avoids ambiguous new-directory merging and
-            // duplicate virtual rules between modules.
-            !target.exists() || other_backend_present || vfs_ids.len() != 1
-        } else {
-            !target.exists() || other_backend_present || vfs_ids.len() > max_module_branches
-        };
-        if unsafe_partition {
-            fallback.extend(vfs_ids);
+
+        if fallback.len() == before {
+            break;
         }
     }
 
@@ -236,6 +259,31 @@ mod tests {
             &["system".to_string()],
         )
         .unwrap();
+        assert!(selection.module_ids.is_empty());
+        assert_eq!(selection.fallback_module_ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn fallback_propagates_across_shared_partitions() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("system")).unwrap();
+        fs::create_dir_all(temp.path().join("vendor")).unwrap();
+
+        let a = module(temp.path(), "a", MountMode::Overlay, "system");
+        fs::create_dir_all(a.source_path.join("vendor")).unwrap();
+        let b = module(temp.path(), "b", MountMode::Overlay, "system");
+        let magic = module(temp.path(), "magic", MountMode::Magic, "vendor");
+        let modules = vec![a, b, magic];
+
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("mirage", true, Some("mirage"), 5),
+            &["system".to_string(), "vendor".to_string()],
+        )
+        .unwrap();
+
+        assert!(selection.operations.is_empty());
         assert!(selection.module_ids.is_empty());
         assert_eq!(selection.fallback_module_ids, vec!["a", "b"]);
     }
