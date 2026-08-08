@@ -10,3 +10,4 @@ pub mod node;
 pub mod overlayfs;
 pub mod rollback;
 pub mod umount_mgr;
+pub mod vfs;

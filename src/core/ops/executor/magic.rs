@@ -9,6 +9,7 @@ use anyhow::Result;
 use crate::{
     conf::config,
     core::{inventory::Module, runtime_state::MountStatistics},
+    domain::MountMode,
     mount::magic_mount::{self, MagicMountOptions},
     partitions,
 };
@@ -17,30 +18,33 @@ pub(super) fn mount_magic(
     modules: &[Module],
     ids: &[String],
     kasumi_fallback_ids: &[String],
+    forced_magic_ids: &[String],
     config: &config::Config,
     tempdir: &Path,
 ) -> Result<(Vec<String>, MountStatistics)> {
     let magic_ws_path = tempdir.join("magic_workspace");
-
-    crate::scoped_log!(
-        debug,
-        "executor:magic",
-        "prepare workspace: path={}",
-        magic_ws_path.display()
-    );
 
     if !magic_ws_path.exists() {
         std::fs::create_dir_all(&magic_ws_path)?;
     }
 
     let module_ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
-    let fallback_ids: HashSet<&str> = kasumi_fallback_ids.iter().map(String::as_str).collect();
+    let kasumi_fallbacks: HashSet<&str> =
+        kasumi_fallback_ids.iter().map(String::as_str).collect();
+    let forced_magic: HashSet<&str> = forced_magic_ids.iter().map(String::as_str).collect();
     let selected_modules: Vec<Module> = modules
         .iter()
         .filter(|module| module_ids.contains(module.id.as_str()))
         .cloned()
         .map(|mut module| {
-            if fallback_ids.contains(module.id.as_str()) {
+            if forced_magic.contains(module.id.as_str()) {
+                module.rules.default_mode = MountMode::Magic;
+                for mode in module.rules.paths.values_mut() {
+                    if !matches!(*mode, MountMode::Ignore) {
+                        *mode = MountMode::Magic;
+                    }
+                }
+            } else if kasumi_fallbacks.contains(module.id.as_str()) {
                 module.rules = module.rules.with_kasumi_fallback_to_magic();
             }
             module
@@ -62,9 +66,10 @@ pub(super) fn mount_magic(
     crate::scoped_log!(
         debug,
         "executor:magic",
-        "complete: requested_modules={}, fallback_modules={}, mounted_modules={}",
+        "complete: requested_modules={}, kasumi_fallback_modules={}, forced_magic_modules={}, mounted_modules={}",
         ids.len(),
         kasumi_fallback_ids.len(),
+        forced_magic_ids.len(),
         mounted_ids.len()
     );
 

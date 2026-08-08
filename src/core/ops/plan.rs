@@ -23,6 +23,18 @@ pub struct OverlayOperation {
     pub lowerdirs: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct VfsOperation {
+    pub backend: String,
+    pub partition_name: String,
+    pub target: PathBuf,
+    /// Module branches only. The executor appends the physical target as the
+    /// final lowerdir after validating the documented branch limit.
+    pub lowerdirs: Vec<PathBuf>,
+    pub module_ids: Vec<String>,
+    pub max_branches: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg(feature = "kasumi")]
 pub struct KasumiAddRule {
@@ -41,6 +53,7 @@ pub struct KasumiMergeRule {
 #[derive(Debug, Default)]
 pub struct MountPlan {
     pub prepare_metrics: PrepareMetrics,
+    pub vfs_ops: Vec<VfsOperation>,
     pub overlay_ops: Vec<OverlayOperation>,
     #[cfg(feature = "kasumi")]
     pub kasumi_add_rules: Vec<KasumiAddRule>,
@@ -48,6 +61,8 @@ pub struct MountPlan {
     pub kasumi_merge_rules: Vec<KasumiMergeRule>,
     #[cfg(feature = "kasumi")]
     pub kasumi_hide_rules: Vec<String>,
+    pub vfs_module_ids: Vec<String>,
+    pub vfs_fallback_module_ids: Vec<String>,
     pub overlay_module_ids: Vec<String>,
     pub magic_module_ids: Vec<String>,
     #[cfg(feature = "kasumi")]

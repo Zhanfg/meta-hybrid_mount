@@ -10,6 +10,11 @@ default_mode = "overlay"
 custom_mounts = []
 rules = {}
 
+[vfs]
+enabled = false
+backend = "auto"
+max_branches = 5
+
 [kasumi]
 enabled = false
 lkm_autoload = true

@@ -19,6 +19,44 @@ pub enum OverlayMode {
     Ext4,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VfsBackendPreference {
+    #[default]
+    Auto,
+    Mirage,
+    Nomountfs,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct VfsConfig {
+    /// Prefer a VFS/No-Mount filesystem for modules that can be moved as one
+    /// complete transaction. Disabled by default to preserve legacy behavior.
+    pub enabled: bool,
+    /// Backend preference. Auto prefers Mirage and then legacy NoMountFS.
+    pub backend: VfsBackendPreference,
+    /// Hard safety bound for a single union chain, including the physical
+    /// partition lowerdir. Mirage documents a maximum of five branches.
+    pub max_branches: usize,
+}
+
+impl Default for VfsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: VfsBackendPreference::Auto,
+            max_branches: 5,
+        }
+    }
+}
+
+impl VfsConfig {
+    pub fn effective_max_branches(&self) -> usize {
+        self.max_branches.clamp(2, 5)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KasumiMapsRuleConfig {
     pub target_ino: u64,
@@ -158,6 +196,8 @@ pub struct Config {
     pub overlay_mode: OverlayMode,
     pub disable_umount: bool,
     pub default_mode: DefaultMode,
+    #[serde(default)]
+    pub vfs: VfsConfig,
     #[serde(default, skip_serializing_if = "kasumi_feature_disabled")]
     pub kasumi: KasumiConfig,
     #[serde(default)]
@@ -231,6 +271,7 @@ impl Default for Config {
             overlay_mode: OverlayMode::default(),
             disable_umount: false,
             default_mode: DefaultMode::default(),
+            vfs: VfsConfig::default(),
             kasumi: KasumiConfig::default(),
             rules: HashMap::new(),
             custom_mounts: Vec::new(),
@@ -242,6 +283,17 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vfs_branch_limit_is_fail_closed_to_mirage_limit() {
+        let mut config = VfsConfig {
+            max_branches: 999,
+            ..VfsConfig::default()
+        };
+        assert_eq!(config.effective_max_branches(), 5);
+        config.max_branches = 0;
+        assert_eq!(config.effective_max_branches(), 2);
+    }
 
     #[test]
     fn degrade_kasumi_to_magic_preserves_mount_coverage() {
@@ -282,7 +334,6 @@ mod tests {
     #[test]
     fn legacy_hidexattr_name_maps_to_current_field() {
         let config: KasumiConfig = toml::from_str("enable_hidexattr = true").unwrap();
-
         assert!(config.enable_overlay_xattr_hide);
     }
 }

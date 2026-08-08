@@ -7,3 +7,4 @@ pub mod executor;
 pub mod mirror_sync;
 pub mod plan;
 pub mod prepare;
+pub mod vfs_plan;

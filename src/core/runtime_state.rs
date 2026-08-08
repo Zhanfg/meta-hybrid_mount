@@ -33,54 +33,24 @@ pub struct MountStatistics {
     pub dirs_mounted: usize,
     pub symlinks_created: usize,
     pub overlayfs_mounts: usize,
+    #[serde(default)]
+    pub vfs_mounts: usize,
     pub ignored_entries: usize,
 }
 
 impl MountStatistics {
-    pub fn record_file(&mut self) {
-        self.total_mounts += 1;
-        self.successful_mounts += 1;
-        self.files_mounted += 1;
-    }
-
-    pub fn record_dir(&mut self) {
-        self.total_mounts += 1;
-        self.successful_mounts += 1;
-        self.dirs_mounted += 1;
-    }
-
-    pub fn record_symlink(&mut self) {
-        self.total_mounts += 1;
-        self.successful_mounts += 1;
-        self.symlinks_created += 1;
-    }
-
-    pub fn record_failed(&mut self) {
-        self.total_mounts += 1;
-        self.failed_mounts += 1;
-    }
-
-    pub fn record_tmpfs(&mut self) {
-        self.tmpfs_created += 1;
-    }
-
-    pub fn record_overlay_mount(&mut self) {
-        self.total_mounts += 1;
-        self.successful_mounts += 1;
-        self.overlayfs_mounts += 1;
-    }
-
-    pub fn record_ignored(&mut self) {
-        self.ignored_entries += 1;
-    }
+    pub fn record_file(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.files_mounted += 1; }
+    pub fn record_dir(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.dirs_mounted += 1; }
+    pub fn record_symlink(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.symlinks_created += 1; }
+    pub fn record_failed(&mut self) { self.total_mounts += 1; self.failed_mounts += 1; }
+    pub fn record_tmpfs(&mut self) { self.tmpfs_created += 1; }
+    pub fn record_overlay_mount(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.overlayfs_mounts += 1; }
+    pub fn record_vfs_mount(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.vfs_mounts += 1; }
+    pub fn record_ignored(&mut self) { self.ignored_entries += 1; }
 
     #[cfg(feature = "control-plane")]
     pub fn success_rate(&self) -> f64 {
-        if self.total_mounts == 0 {
-            0.0
-        } else {
-            self.successful_mounts as f64 * 100.0 / self.total_mounts as f64
-        }
+        if self.total_mounts == 0 { 0.0 } else { self.successful_mounts as f64 * 100.0 / self.total_mounts as f64 }
     }
 
     pub fn merge(&mut self, other: &Self) {
@@ -92,6 +62,7 @@ impl MountStatistics {
         self.dirs_mounted += other.dirs_mounted;
         self.symlinks_created += other.symlinks_created;
         self.overlayfs_mounts += other.overlayfs_mounts;
+        self.vfs_mounts += other.vfs_mounts;
         self.ignored_entries += other.ignored_entries;
     }
 }
@@ -101,6 +72,8 @@ pub struct ModuleModeStats {
     pub overlayfs: usize,
     pub magicmount: usize,
     pub kasumi: usize,
+    #[serde(default)]
+    pub vfs: usize,
     pub blacklisted: usize,
 }
 
@@ -136,6 +109,12 @@ pub struct RuntimeState {
     pub pid: u32,
     pub storage_mode: String,
     pub mount_point: PathBuf,
+    #[serde(default)]
+    pub vfs_modules: Vec<String>,
+    #[serde(default)]
+    pub vfs_backend: Option<String>,
+    #[serde(default)]
+    pub vfs_fallback_modules: Vec<String>,
     pub overlay_modules: Vec<String>,
     pub magic_modules: Vec<String>,
     pub kasumi_modules: Vec<String>,
@@ -159,92 +138,10 @@ impl RuntimeState {
         if self.cached_status_value.is_none() {
             self.cached_status_value = Some(serde_json::to_value(&*self)?);
         }
-        Ok(self
-            .cached_status_value
-            .as_ref()
-            .expect("cached_status_value was just populated above"))
+        Ok(self.cached_status_value.as_ref().expect("cached status populated"))
     }
 
-    fn invalidate_cache(&mut self) {
-        self.cached_status_value = None;
-    }
-}
-
-impl RuntimeState {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        storage_mode: String,
-        mount_point: PathBuf,
-        overlay_modules: Vec<String>,
-        magic_modules: Vec<String>,
-        kasumi_modules: Vec<String>,
-        custom_mounts: Vec<String>,
-        active_mounts: Vec<String>,
-        mount_stats: MountStatistics,
-        mode_stats: ModuleModeStats,
-        kasumi: KasumiRuntimeInfo,
-    ) -> Result<Self> {
-        let start = SystemTime::now();
-
-        let timestamp = start
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| anyhow::anyhow!("system clock is before the Unix epoch: {err}"))?
-            .as_secs();
-
-        let pid = std::process::id();
-
-        #[cfg(feature = "control-plane")]
-        let tmpfs_xattr_supported = xattr::is_overlay_xattr_supported()?;
-
-        let state = Self {
-            timestamp,
-            pid,
-            storage_mode,
-            mount_point,
-            overlay_modules,
-            magic_modules,
-            kasumi_modules,
-            custom_mounts,
-            skip_mount_modules: Vec::new(),
-            blacklisted_modules: Vec::new(),
-            active_mounts,
-            #[cfg(feature = "control-plane")]
-            tmpfs_xattr_supported,
-            mount_stats,
-            mode_stats,
-            kasumi,
-            daemon: DaemonRuntimeInfo::default(),
-            cached_status_value: None,
-        };
-
-        #[cfg(feature = "control-plane")]
-        crate::scoped_log!(
-            debug,
-            "runtime_state:new",
-            "complete: storage_mode={}, mount_point={}, overlay_modules={}, magic_modules={}, kasumi_modules={}, active_mounts={}, tmpfs_xattr_supported={}",
-            state.storage_mode,
-            state.mount_point.display(),
-            state.overlay_modules.len(),
-            state.magic_modules.len(),
-            state.kasumi_modules.len(),
-            state.active_mounts.len(),
-            state.tmpfs_xattr_supported
-        );
-        #[cfg(not(feature = "control-plane"))]
-        crate::scoped_log!(
-            debug,
-            "runtime_state:new",
-            "complete: storage_mode={}, mount_point={}, overlay_modules={}, magic_modules={}, kasumi_modules={}, active_mounts={}",
-            state.storage_mode,
-            state.mount_point.display(),
-            state.overlay_modules.len(),
-            state.magic_modules.len(),
-            state.kasumi_modules.len(),
-            state.active_mounts.len()
-        );
-
-        Ok(state)
-    }
+    fn invalidate_cache(&mut self) { self.cached_status_value = None; }
 
     pub fn save(&self) -> Result<()> {
         let json = serde_json::to_string_pretty(self)?;
@@ -254,29 +151,7 @@ impl RuntimeState {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
-        crate::scoped_log!(
-            debug,
-            "runtime_state:save",
-            "start: path={}",
-            defs::STATE_FILE
-        );
         atomic_write(defs::STATE_FILE, json.as_bytes())?;
-        crate::scoped_log!(
-            debug,
-            "runtime_state:save",
-            "complete: path={}, bytes={}",
-            defs::STATE_FILE,
-            json.len()
-        );
-        crate::scoped_log!(
-            info,
-            "runtime_state:summary",
-            "saved: storage_mode={}, active_mounts={}, kasumi_modules={}, daemon_alive={}",
-            self.storage_mode,
-            self.active_mounts.join(","),
-            self.kasumi_modules.join(","),
-            self.daemon.alive
-        );
         Ok(())
     }
 
@@ -287,100 +162,76 @@ impl RuntimeState {
         result: &ExecutionResult,
         inventory: &InventorySummary,
     ) -> Result<Self> {
-        crate::scoped_log!(
-            debug,
-            "runtime_state:build",
-            "start: storage_mode={}, mount_point={}, overlay_modules={}, magic_modules={}, kasumi_modules={}",
-            storage_mode.as_str(),
-            mount_point.display(),
-            result.overlay_module_ids.len(),
-            result.magic_module_ids.len(),
-            result.kasumi_count()
-        );
-
         #[cfg(feature = "kasumi")]
         let kasumi = kasumi::collect_runtime_info(config)?;
         #[cfg(not(feature = "kasumi"))]
-        let kasumi = {
-            let _ = config;
-            KasumiRuntimeInfo::default()
-        };
-        let mut state = Self::new(
-            storage_mode.as_str().to_owned(),
-            mount_point.to_path_buf(),
-            result.overlay_module_ids.clone(),
-            result.magic_module_ids.clone(),
-            {
+        let kasumi = { let _ = config; KasumiRuntimeInfo::default() };
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| anyhow::anyhow!("system clock is before the Unix epoch: {err}"))?
+            .as_secs();
+        #[cfg(feature = "control-plane")]
+        let tmpfs_xattr_supported = xattr::is_overlay_xattr_supported()?;
+
+        let mut state = Self {
+            timestamp,
+            pid: std::process::id(),
+            storage_mode: storage_mode.as_str().to_owned(),
+            mount_point: mount_point.to_path_buf(),
+            vfs_modules: result.vfs_module_ids.clone(),
+            vfs_backend: result.vfs_backend.clone(),
+            vfs_fallback_modules: result.vfs_fallback_module_ids.clone(),
+            overlay_modules: result.overlay_module_ids.clone(),
+            magic_modules: result.magic_module_ids.clone(),
+            kasumi_modules: {
                 #[cfg(feature = "kasumi")]
-                {
-                    result.kasumi_module_ids.clone()
-                }
+                { result.kasumi_module_ids.clone() }
                 #[cfg(not(feature = "kasumi"))]
-                {
-                    Vec::new()
-                }
+                { Vec::new() }
             },
-            result.custom_mount_targets.clone(),
-            collect_active_mounts(result),
-            result.mount_stats.clone(),
-            collect_mode_stats(result),
+            custom_mounts: result.custom_mount_targets.clone(),
+            skip_mount_modules: inventory.skip_mount_modules.clone(),
+            blacklisted_modules: inventory.blacklisted_modules.clone(),
+            active_mounts: collect_active_mounts(result),
+            #[cfg(feature = "control-plane")]
+            tmpfs_xattr_supported,
+            mount_stats: result.mount_stats.clone(),
+            mode_stats: collect_mode_stats(result),
             kasumi,
-        )?;
-        state.skip_mount_modules = inventory.skip_mount_modules.clone();
-        state.blacklisted_modules = inventory.blacklisted_modules.clone();
+            daemon: DaemonRuntimeInfo::default(),
+            cached_status_value: None,
+        };
         state.mode_stats.blacklisted = state.blacklisted_modules.len();
         state.invalidate_cache();
-
-        crate::scoped_log!(
-            debug,
-            "runtime_state:build",
-            "complete: skip_mount_modules={}, active_mounts={}",
-            state.skip_mount_modules.len(),
-            state.active_mounts.len()
-        );
-
         Ok(state)
     }
 
     pub fn mounted_module_ids(&self) -> HashSet<&str> {
-        self.overlay_modules
+        self.vfs_modules
             .iter()
+            .chain(self.overlay_modules.iter())
             .chain(self.magic_modules.iter())
             .chain(self.kasumi_modules.iter())
-            .map(|s| s.as_str())
+            .map(String::as_str)
             .collect()
     }
 
     #[cfg(feature = "control-plane")]
     pub fn set_daemon_state(&mut self, alive: bool, socket_path: impl Into<String>) -> Result<()> {
-        let refreshed_at = SystemTime::now()
+        self.daemon.alive = alive;
+        self.daemon.socket_path = socket_path.into();
+        self.daemon.last_refresh_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|err| anyhow::anyhow!("system clock is before the Unix epoch: {err}"))?
             .as_secs();
-        self.daemon.alive = alive;
-        self.daemon.socket_path = socket_path.into();
-        self.daemon.last_refresh_ts = refreshed_at;
         self.invalidate_cache();
         Ok(())
     }
 
     pub fn load() -> Result<Self> {
-        crate::scoped_log!(
-            debug,
-            "runtime_state:load",
-            "start: path={}",
-            defs::STATE_FILE
-        );
         let content = fs::read_to_string(defs::STATE_FILE)?;
-        let state = serde_json::from_str(&content)?;
-        crate::scoped_log!(
-            debug,
-            "runtime_state:load",
-            "complete: path={}, bytes={}",
-            defs::STATE_FILE,
-            content.len()
-        );
-        Ok(state)
+        Ok(serde_json::from_str(&content)?)
     }
 }
 
@@ -389,33 +240,17 @@ fn collect_mode_stats(result: &ExecutionResult) -> ModuleModeStats {
         overlayfs: result.overlay_module_ids.len(),
         magicmount: result.magic_module_ids.len(),
         kasumi: result.kasumi_count(),
-        blacklisted: 0usize,
+        vfs: result.vfs_module_ids.len(),
+        blacklisted: 0,
     }
 }
 
 fn collect_active_mounts(result: &ExecutionResult) -> Vec<String> {
     let mut active_mounts = result.overlay_partitions.clone();
-
-    if !result.custom_mount_targets.is_empty() {
-        active_mounts.push("custom-bind".to_string());
-    }
-
-    if result.kasumi_runtime_enabled {
-        active_mounts.push("kasumi".to_string());
-    }
-
+    active_mounts.extend(result.vfs_partitions.iter().map(|p| format!("vfs:{p}")));
+    if !result.custom_mount_targets.is_empty() { active_mounts.push("custom-bind".to_string()); }
+    if result.kasumi_runtime_enabled { active_mounts.push("kasumi".to_string()); }
     active_mounts.sort();
     active_mounts.dedup();
-
-    crate::scoped_log!(
-        debug,
-        "runtime_state:active_mounts",
-        "complete: overlay_partitions={}, custom_mounts={}, kasumi_runtime_enabled={}, active_mounts={}",
-        result.overlay_partitions.len(),
-        result.custom_mount_targets.len(),
-        result.kasumi_runtime_enabled,
-        active_mounts.len()
-    );
-
     active_mounts
 }
