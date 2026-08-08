@@ -44,13 +44,13 @@ struct IoctlData {
 
 const IOCTL_DATA_SIZE: u32 = std::mem::size_of::<IoctlData>() as u32;
 const IOCTL_ADD_RULE: u32 = iow(ZEROMOUNT_MAGIC, 1, IOCTL_DATA_SIZE);
-const IOCTL_CLEAR_ALL: u32 = io(ZEROMOUNT_MAGIC, 3);
+const IOCTL_DEL_RULE: u32 = iow(ZEROMOUNT_MAGIC, 2, IOCTL_DATA_SIZE);
 const IOCTL_GET_VERSION: u32 = ior(ZEROMOUNT_MAGIC, 4, 4);
+const IOCTL_GET_LIST: u32 = ior(ZEROMOUNT_MAGIC, 7, 4);
 const IOCTL_ENABLE: u32 = io(ZEROMOUNT_MAGIC, 8);
 const IOCTL_DISABLE: u32 = io(ZEROMOUNT_MAGIC, 9);
 const IOCTL_REFRESH: u32 = io(ZEROMOUNT_MAGIC, 10);
 const IOCTL_GET_STATUS: u32 = ior(ZEROMOUNT_MAGIC, 11, 4);
-const IOCTL_GET_LIST: u32 = ior(ZEROMOUNT_MAGIC, 7, 4);
 
 const fn ioc(dir: u32, typ: u32, nr: u32, size: u32) -> u32 {
     (dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT)
@@ -98,9 +98,9 @@ trait DriverOps {
     fn status(&self) -> Result<Option<bool>>;
     fn list_rules(&self) -> Result<String>;
     fn add_rule(&self, rule: &RedirectRule) -> Result<()>;
+    fn del_rule(&self, rule: &RedirectRule) -> Result<()>;
     fn enable(&self) -> Result<()>;
     fn disable(&self) -> Result<()>;
-    fn clear_all(&self) -> Result<()>;
     fn refresh(&self) -> Result<()>;
 }
 
@@ -128,6 +128,30 @@ impl Driver {
         } else {
             Ok(ret)
         }
+    }
+
+    fn rule_ioctl(&self, request: u32, rule: &RedirectRule, flags: u32) -> Result<()> {
+        let virtual_path =
+            CString::new(rule.virtual_path.as_os_str().as_bytes()).with_context(|| {
+                format!(
+                    "invalid ZeroMount virtual path {}",
+                    rule.virtual_path.display()
+                )
+            })?;
+        let real_path = CString::new(rule.real_path.as_os_str().as_bytes())
+            .with_context(|| format!("invalid ZeroMount real path {}", rule.real_path.display()))?;
+        let mut data = IoctlData {
+            virtual_path: virtual_path.as_ptr(),
+            real_path: real_path.as_ptr(),
+            flags,
+            #[cfg(target_pointer_width = "64")]
+            _pad: 0,
+        };
+        self.raw_ioctl(
+            request,
+            (&mut data as *mut IoctlData).cast::<libc::c_void>(),
+        )?;
+        Ok(())
     }
 }
 
@@ -178,27 +202,17 @@ impl DriverOps for Driver {
     }
 
     fn add_rule(&self, rule: &RedirectRule) -> Result<()> {
-        let virtual_path =
-            CString::new(rule.virtual_path.as_os_str().as_bytes()).with_context(|| {
-                format!(
-                    "invalid ZeroMount virtual path {}",
-                    rule.virtual_path.display()
-                )
-            })?;
-        let real_path = CString::new(rule.real_path.as_os_str().as_bytes())
-            .with_context(|| format!("invalid ZeroMount real path {}", rule.real_path.display()))?;
-        let mut data = IoctlData {
-            virtual_path: virtual_path.as_ptr(),
-            real_path: real_path.as_ptr(),
-            flags: ZM_ACTIVE | if rule.is_dir { ZM_DIR } else { 0 },
-            #[cfg(target_pointer_width = "64")]
-            _pad: 0,
-        };
-        self.raw_ioctl(
+        self.rule_ioctl(
             IOCTL_ADD_RULE,
-            (&mut data as *mut IoctlData).cast::<libc::c_void>(),
-        )?;
-        Ok(())
+            rule,
+            ZM_ACTIVE | if rule.is_dir { ZM_DIR } else { 0 },
+        )
+    }
+
+    fn del_rule(&self, rule: &RedirectRule) -> Result<()> {
+        // Match the published ZeroMount userspace DEL_RULE ABI. Deletion is
+        // keyed by virtual path; do not claim directory semantics here.
+        self.rule_ioctl(IOCTL_DEL_RULE, rule, ZM_ACTIVE)
     }
 
     fn enable(&self) -> Result<()> {
@@ -208,11 +222,6 @@ impl DriverOps for Driver {
 
     fn disable(&self) -> Result<()> {
         self.raw_ioctl(IOCTL_DISABLE, std::ptr::null_mut())?;
-        Ok(())
-    }
-
-    fn clear_all(&self) -> Result<()> {
-        self.raw_ioctl(IOCTL_CLEAR_ALL, std::ptr::null_mut())?;
         Ok(())
     }
 
@@ -341,13 +350,13 @@ pub fn apply_modules(modules: &[Module], ids: &[String]) -> Result<ApplyOutcome>
         });
     };
 
-    let guard = RuntimeGuard {
-        driver,
-        armed: true,
-    };
-    match apply_rules_transaction(&guard.driver, &rules) {
+    match apply_rules_transaction(&driver, &rules) {
         Ok(()) => Ok(ApplyOutcome::Applied {
-            guard,
+            guard: RuntimeGuard {
+                driver,
+                rules: rules.clone(),
+                armed: true,
+            },
             partitions: active_partitions,
             rule_count: rules.len(),
             version,
@@ -499,25 +508,32 @@ fn apply_rules_transaction<D: DriverOps>(
     driver: &D,
     rules: &[RedirectRule],
 ) -> std::result::Result<(), ApplyFailure> {
+    let mut added = Vec::new();
     for rule in rules {
         if let Err(error) = driver.add_rule(rule) {
-            return cleanup_after_failure(driver, format!("rule_injection_failed: {error:#}"));
+            return cleanup_after_failure(
+                driver,
+                &added,
+                format!("rule_injection_failed: {error:#}"),
+            );
         }
+        added.push(rule.clone());
     }
     if let Err(error) = driver.enable() {
-        return cleanup_after_failure(driver, format!("enable_failed: {error:#}"));
+        return cleanup_after_failure(driver, &added, format!("enable_failed: {error:#}"));
     }
     if let Err(error) = driver.refresh() {
-        return cleanup_after_failure(driver, format!("refresh_failed: {error:#}"));
+        return cleanup_after_failure(driver, &added, format!("refresh_failed: {error:#}"));
     }
     Ok(())
 }
 
 fn cleanup_after_failure<D: DriverOps>(
     driver: &D,
+    owned_rules: &[RedirectRule],
     reason: String,
 ) -> std::result::Result<(), ApplyFailure> {
-    match cleanup_driver(driver) {
+    match cleanup_owned_rules(driver, owned_rules) {
         Ok(()) => Err(ApplyFailure::Fallback(reason)),
         Err(error) => Err(ApplyFailure::Fatal(anyhow!(
             "ZeroMount transaction failed and rollback was incomplete: {reason}; rollback={error:#}"
@@ -525,17 +541,46 @@ fn cleanup_after_failure<D: DriverOps>(
     }
 }
 
-fn cleanup_driver<D: DriverOps>(driver: &D) -> Result<()> {
+fn cleanup_owned_rules<D: DriverOps>(driver: &D, owned_rules: &[RedirectRule]) -> Result<()> {
     let mut errors = Vec::new();
-    if let Err(error) = driver.disable() {
-        errors.push(format!("disable={error:#}"));
+
+    for rule in owned_rules.iter().rev() {
+        if let Err(error) = driver.del_rule(rule) {
+            errors.push(format!(
+                "del_rule({})={error:#}",
+                rule.virtual_path.display()
+            ));
+        }
     }
-    if let Err(error) = driver.clear_all() {
-        errors.push(format!("clear_all={error:#}"));
+
+    let remaining_rules = match driver.list_rules() {
+        Ok(value) => Some(value),
+        Err(error) => {
+            errors.push(format!("list_rules={error:#}"));
+            None
+        }
+    };
+
+    if remaining_rules
+        .as_deref()
+        .is_some_and(|value| !value.lines().any(|line| !line.trim().is_empty()))
+    {
+        match driver.status() {
+            Ok(Some(true)) => {
+                if let Err(error) = driver.disable() {
+                    errors.push(format!("disable={error:#}"));
+                }
+            }
+            Ok(Some(false)) => {}
+            Ok(None) => errors.push("status_ioctl_missing_during_cleanup".to_string()),
+            Err(error) => errors.push(format!("status={error:#}")),
+        }
     }
+
     if let Err(error) = driver.refresh() {
         errors.push(format!("refresh={error:#}"));
     }
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -545,6 +590,7 @@ fn cleanup_driver<D: DriverOps>(driver: &D) -> Result<()> {
 
 pub struct RuntimeGuard {
     driver: Driver,
+    rules: Vec<RedirectRule>,
     armed: bool,
 }
 
@@ -559,7 +605,7 @@ impl Drop for RuntimeGuard {
         if !self.armed {
             return;
         }
-        match cleanup_driver(&self.driver) {
+        match cleanup_owned_rules(&self.driver, &self.rules) {
             Ok(()) => crate::scoped_log!(
                 warn,
                 "zeromount",
@@ -578,7 +624,7 @@ impl Drop for RuntimeGuard {
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(IOCTL_ADD_RULE == 0x40185A01);
-    assert!(IOCTL_CLEAR_ALL == 0x5A03);
+    assert!(IOCTL_DEL_RULE == 0x40185A02);
     assert!(IOCTL_GET_VERSION == 0x80045A04);
     assert!(IOCTL_GET_LIST == 0x80045A07);
     assert!(IOCTL_ENABLE == 0x5A08);
@@ -603,9 +649,9 @@ mod tests {
         rules: String,
         fail_add_at: Option<usize>,
         add_count: RefCell<usize>,
+        del_calls: RefCell<usize>,
         enable_calls: RefCell<usize>,
         disable_calls: RefCell<usize>,
-        clear_calls: RefCell<usize>,
         refresh_calls: RefCell<usize>,
     }
 
@@ -627,16 +673,16 @@ mod tests {
             }
             Ok(())
         }
+        fn del_rule(&self, _rule: &RedirectRule) -> Result<()> {
+            *self.del_calls.borrow_mut() += 1;
+            Ok(())
+        }
         fn enable(&self) -> Result<()> {
             *self.enable_calls.borrow_mut() += 1;
             Ok(())
         }
         fn disable(&self) -> Result<()> {
             *self.disable_calls.borrow_mut() += 1;
-            Ok(())
-        }
-        fn clear_all(&self) -> Result<()> {
-            *self.clear_calls.borrow_mut() += 1;
             Ok(())
         }
         fn refresh(&self) -> Result<()> {
@@ -668,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_injection_is_cleared_before_fallback_and_never_enabled() {
+    fn partial_injection_removes_only_owned_rules_and_never_enables() {
         let driver = MockDriver {
             version: 1,
             fail_add_at: Some(2),
@@ -677,7 +723,35 @@ mod tests {
         let result = apply_rules_transaction(&driver, &[rule("a"), rule("b")]);
         assert!(matches!(result, Err(ApplyFailure::Fallback(_))));
         assert_eq!(*driver.enable_calls.borrow(), 0);
-        assert_eq!(*driver.clear_calls.borrow(), 1);
+        assert_eq!(*driver.del_calls.borrow(), 1);
+        assert_eq!(*driver.disable_calls.borrow(), 0);
+        assert_eq!(*driver.refresh_calls.borrow(), 1);
+    }
+
+    #[test]
+    fn owned_cleanup_preserves_foreign_rules_and_global_enable() {
+        let driver = MockDriver {
+            version: 1,
+            enabled: true,
+            rules: "/system/foreign -> /data/foreign".to_string(),
+            ..MockDriver::default()
+        };
+        cleanup_owned_rules(&driver, &[rule("ours")]).unwrap();
+        assert_eq!(*driver.del_calls.borrow(), 1);
+        assert_eq!(*driver.disable_calls.borrow(), 0);
+        assert_eq!(*driver.refresh_calls.borrow(), 1);
+    }
+
+    #[test]
+    fn owned_cleanup_disables_empty_engine_after_removal() {
+        let driver = MockDriver {
+            version: 1,
+            enabled: true,
+            rules: String::new(),
+            ..MockDriver::default()
+        };
+        cleanup_owned_rules(&driver, &[rule("ours")]).unwrap();
+        assert_eq!(*driver.del_calls.borrow(), 1);
         assert_eq!(*driver.disable_calls.borrow(), 1);
         assert_eq!(*driver.refresh_calls.borrow(), 1);
     }
