@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 jobs:
@@ -23,10 +23,26 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: integration/vfs-nomount-20260809
+          fetch-depth: 0
       - name: Trust checkout directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Format Rust sources
         run: cargo fmt --all
+      - name: Commit rustfmt output when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src; then
+            echo "No rustfmt changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          git commit -m "style: rustfmt VFS integration"
+          git push origin HEAD:integration/vfs-nomount-20260809
       - name: Export formatted Rust tree
         uses: actions/upload-artifact@v7
         with:
