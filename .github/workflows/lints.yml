@@ -27,7 +27,7 @@ jobs:
   lints-check:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci@sha256:c7df09521257f5b5e78e20ffa4928eb5ec905fa324523a36723f625b496b8e22
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -52,6 +52,8 @@ jobs:
           while IFS= read -r -d '' script; do
             sh -n "$script"
           done < <(find module -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
+      - name: Check device verifier shell syntax
+        run: sh -n scripts/device-postflash-verify.sh
       - name: Test archive safety extraction
         run: bash scripts/test-archive-safety.sh
       - name: Test metamodule safety helpers
@@ -88,7 +90,7 @@ jobs:
   webui-lints:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci@sha256:c7df09521257f5b5e78e20ffa4928eb5ec905fa324523a36723f625b496b8e22
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
