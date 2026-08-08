@@ -33,8 +33,17 @@ interface PatchConfigOptions extends SaveConfigOptions {
   applyRuntime?: boolean;
 }
 
+const INITIAL_CONFIG: AppConfig = {
+  ...DEFAULT_CONFIG,
+  vfs: {
+    enabled: false,
+    backend: "auto",
+    max_branches: 5,
+  },
+};
+
 const createConfigStore = () => {
-  const [config, setConfigStore] = createStore<AppConfig>(DEFAULT_CONFIG);
+  const [config, setConfigStore] = createStore<AppConfig>(INITIAL_CONFIG);
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   let pendingLoad: Promise<boolean> | null = null;
