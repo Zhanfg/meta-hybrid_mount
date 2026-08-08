@@ -20,6 +20,17 @@ export interface ModuleRules {
 }
 
 export type OverlayMode = "tmpfs" | "ext4";
+export type VfsBackendPreference =
+  | "auto"
+  | "zeromount"
+  | "mirage"
+  | "nomountfs";
+
+export interface VfsConfig {
+  enabled: boolean;
+  backend: VfsBackendPreference;
+  max_branches: number;
+}
 
 export interface CustomBindMount {
   source: string;
@@ -32,6 +43,7 @@ export interface AppConfig {
   overlay_mode: OverlayMode;
   disable_umount: boolean;
   default_mode: MountMode;
+  vfs: VfsConfig;
   custom_mounts: CustomBindMount[];
   kasumi: KasumiConfig;
   rules: Record<string, ModuleRules>;
@@ -56,6 +68,8 @@ export interface StorageStatus {
   type: OverlayMode;
   modeStats: ModeStats;
   mountedCount: number;
+  vfsBackend: string | null;
+  vfsFallbackCount: number;
 }
 
 export interface SystemInfo {
@@ -208,6 +222,7 @@ export interface LanguageOption {
 }
 
 export interface ModeStats {
+  vfs: number;
   overlay: number;
   magic: number;
   kasumi: number;
