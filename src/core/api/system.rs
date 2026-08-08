@@ -42,6 +42,7 @@ pub struct MountStatsPayload {
     pub dirs_mounted: usize,
     pub symlinks_created: usize,
     pub overlayfs_mounts: usize,
+    pub vfs_mounts: usize,
     pub success_rate: f64,
 }
 
@@ -67,6 +68,7 @@ impl From<&crate::core::runtime_state::MountStatistics> for MountStatsPayload {
             dirs_mounted: stats.dirs_mounted,
             symlinks_created: stats.symlinks_created,
             overlayfs_mounts: stats.overlayfs_mounts,
+            vfs_mounts: stats.vfs_mounts,
             success_rate: stats.success_rate(),
         }
     }
