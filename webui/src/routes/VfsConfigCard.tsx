@@ -60,11 +60,14 @@ export default function VfsConfigCard() {
   );
 
   async function save(next: VfsConfig) {
-    await configStore.patchConfig(
+    const saved = await configStore.patchConfig(
       { vfs: next },
       { applyRuntime: false, showSuccess: false },
     );
-    uiStore.showToast(text().reboot, "success");
+    if (saved) {
+      uiStore.showToast(text().reboot, "success");
+    }
+    return saved;
   }
 
   function setEnabled(enabled: boolean) {
