@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+# Candidate validation trigger: the package source tree is frozen; this script-only
+# comment forces the path-filtered build workflow to validate the exact review branch.
 CC_BIN="${CC:-cc}"
 TMP_BIN="$(mktemp "${TMPDIR:-/tmp}/kasumi-uapi-compat.XXXXXX")"
 trap 'rm -f "$TMP_BIN"' EXIT HUP INT TERM
