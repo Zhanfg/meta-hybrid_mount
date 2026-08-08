@@ -42,6 +42,8 @@ const createSysStore = () => {
       type: status.storage_mode,
       modeStats: buildModeStats(status),
       mountedCount: buildMountedCount(status),
+      vfsBackend: status.vfs_backend,
+      vfsFallbackCount: status.vfs_fallback_modules.length,
     });
     setActivePartitions(status.active_mounts);
 
@@ -97,7 +99,7 @@ const createSysStore = () => {
       }
     })();
 
-    return pendingVersionLoad;
+    return pendingLoad;
   }
 
   function ensureStatusLoaded() {
@@ -116,6 +118,8 @@ const createSysStore = () => {
       type: status.storage_mode,
       modeStats: buildModeStats(status),
       mountedCount: buildMountedCount(status),
+      vfsBackend: status.vfs_backend,
+      vfsFallbackCount: status.vfs_fallback_modules.length,
     });
     setActivePartitions(status.active_mounts);
   }
