@@ -99,7 +99,7 @@ const createSysStore = () => {
       }
     })();
 
-    return pendingLoad;
+    return pendingVersionLoad;
   }
 
   function ensureStatusLoaded() {
