@@ -25,13 +25,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate release tag and main ancestry
+      - name: Validate release tag, source version and main ancestry
         shell: bash
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "Unsupported release tag: $TAG"
+            exit 1
+          fi
+
+          TAG_VERSION="${TAG#v}"
+          CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$CARGO_VERSION" ] || [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "Release blocked: tag version $TAG_VERSION does not match Cargo.toml version ${CARGO_VERSION:-<missing>}."
+            echo "Bump and validate the source version on main before creating the tag."
             exit 1
           fi
 
@@ -63,7 +71,7 @@ jobs:
       matrix:
         flavor: [full, lite, nano]
     container:
-      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci@sha256:c7df09521257f5b5e78e20ffa4928eb5ec905fa324523a36723f625b496b8e22
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -220,7 +228,7 @@ jobs:
       contents: write
       packages: read
     container:
-      image: ghcr.io/zhanfg/meta-hybrid_mount-ci:latest
+      image: ghcr.io/zhanfg/meta-hybrid_mount-ci@sha256:c7df09521257f5b5e78e20ffa4928eb5ec905fa324523a36723f625b496b8e22
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -344,18 +352,6 @@ jobs:
           OUTPUT: /tmp/changelog.md
           GITHUB_REPO: ${{ github.repository }}
 
-      - name: Create local GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            ${{ steps.paths.outputs.full_zip }}
-            ${{ steps.paths.outputs.lite_zip }}
-            ${{ steps.paths.outputs.nano_zip }}
-            SHA256SUMS.txt
-          body_path: /tmp/changelog.md
-
       - name: Sync release metadata to main
         run: |
           set -euo pipefail
@@ -370,12 +366,20 @@ jobs:
           mv /tmp/update-nano.json update-nano.json
           cat /tmp/changelog.md | cat - changelog.md > temp && mv temp changelog.md
 
-          CLEAN_VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \".*\"/version = \"${CLEAN_VERSION}\"/" Cargo.toml
-          cargo update
-
-          git add update.json update-lite.json update-nano.json changelog.md Cargo.toml Cargo.lock
+          git add update.json update-lite.json update-nano.json changelog.md
           if ! git diff --staged --quiet; then
-            git commit -m "chore(release): sync version ${GITHUB_REF_NAME} [skip ci]"
+            git commit -m "chore(release): sync metadata for ${GITHUB_REF_NAME} [skip ci]"
             git push origin main
           fi
+
+      - name: Create local GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            ${{ steps.paths.outputs.full_zip }}
+            ${{ steps.paths.outputs.lite_zip }}
+            ${{ steps.paths.outputs.nano_zip }}
+            SHA256SUMS.txt
+          body_path: /tmp/changelog.md
