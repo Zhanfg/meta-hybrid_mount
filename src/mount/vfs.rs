@@ -31,7 +31,13 @@ pub fn mount_union(op: &VfsOperation) -> Result<()> {
         .arg(&op.target)
         .args(["-o", option.as_str()])
         .output()
-        .with_context(|| format!("failed to execute {} for {}", mount_binary, op.target.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to execute {} for {}",
+                mount_binary,
+                op.target.display()
+            )
+        })?;
 
     if !output.status.success() {
         bail!(
@@ -95,7 +101,10 @@ fn validate_path(path: &Path, role: &str) -> Result<()> {
         bail!("VFS {role} must be absolute: {}", path.display());
     }
     if path.to_string_lossy().contains(':') {
-        bail!("VFS {role} contains unsupported ':' separator: {}", path.display());
+        bail!(
+            "VFS {role} contains unsupported ':' separator: {}",
+            path.display()
+        );
     }
     Ok(())
 }

@@ -38,7 +38,9 @@ pub fn select_vfs_modules(
 ) -> Result<VfsSelection> {
     let candidates: BTreeSet<String> = modules
         .iter()
-        .filter(|module| module.rules.default_mode == MountMode::Overlay && module.rules.paths.is_empty())
+        .filter(|module| {
+            module.rules.default_mode == MountMode::Overlay && module.rules.paths.is_empty()
+        })
         .filter(|module| !active_partitions(module, managed_partitions).is_empty())
         .map(|module| module.id.clone())
         .collect();
@@ -98,7 +100,9 @@ pub fn select_vfs_modules(
 
     for partition in managed_partitions {
         for module in modules {
-            if selected_set.contains(module.id.as_str()) && module.source_path.join(partition).is_dir() {
+            if selected_set.contains(module.id.as_str())
+                && module.source_path.join(partition).is_dir()
+            {
                 grouped.entry(partition.clone()).or_default().push(module);
             }
         }
@@ -111,9 +115,8 @@ pub fn select_vfs_modules(
         // Put the highest-priority module first in lowerdir order.
         members.sort_by(|a, b| b.id.cmp(&a.id));
         let raw_target = system_root.join(&partition);
-        let target = fs::canonicalize(&raw_target).with_context(|| {
-            format!("failed to resolve VFS target {}", raw_target.display())
-        })?;
+        let target = fs::canonicalize(&raw_target)
+            .with_context(|| format!("failed to resolve VFS target {}", raw_target.display()))?;
         let lowerdirs = members
             .iter()
             .map(|module| module.source_path.join(&partition))

@@ -137,9 +137,7 @@ fn select_vfs_backend(filesystems: &str, preference: VfsBackendPreference) -> Op
             }
         }
         VfsBackendPreference::Mirage => available("mirage").then(|| "mirage".to_string()),
-        VfsBackendPreference::Nomountfs => {
-            available("nomountfs").then(|| "nomountfs".to_string())
-        }
+        VfsBackendPreference::Nomountfs => available("nomountfs").then(|| "nomountfs".to_string()),
     }
 }
 

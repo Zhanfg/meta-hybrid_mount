@@ -39,18 +39,49 @@ pub struct MountStatistics {
 }
 
 impl MountStatistics {
-    pub fn record_file(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.files_mounted += 1; }
-    pub fn record_dir(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.dirs_mounted += 1; }
-    pub fn record_symlink(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.symlinks_created += 1; }
-    pub fn record_failed(&mut self) { self.total_mounts += 1; self.failed_mounts += 1; }
-    pub fn record_tmpfs(&mut self) { self.tmpfs_created += 1; }
-    pub fn record_overlay_mount(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.overlayfs_mounts += 1; }
-    pub fn record_vfs_mount(&mut self) { self.total_mounts += 1; self.successful_mounts += 1; self.vfs_mounts += 1; }
-    pub fn record_ignored(&mut self) { self.ignored_entries += 1; }
+    pub fn record_file(&mut self) {
+        self.total_mounts += 1;
+        self.successful_mounts += 1;
+        self.files_mounted += 1;
+    }
+    pub fn record_dir(&mut self) {
+        self.total_mounts += 1;
+        self.successful_mounts += 1;
+        self.dirs_mounted += 1;
+    }
+    pub fn record_symlink(&mut self) {
+        self.total_mounts += 1;
+        self.successful_mounts += 1;
+        self.symlinks_created += 1;
+    }
+    pub fn record_failed(&mut self) {
+        self.total_mounts += 1;
+        self.failed_mounts += 1;
+    }
+    pub fn record_tmpfs(&mut self) {
+        self.tmpfs_created += 1;
+    }
+    pub fn record_overlay_mount(&mut self) {
+        self.total_mounts += 1;
+        self.successful_mounts += 1;
+        self.overlayfs_mounts += 1;
+    }
+    pub fn record_vfs_mount(&mut self) {
+        self.total_mounts += 1;
+        self.successful_mounts += 1;
+        self.vfs_mounts += 1;
+    }
+    pub fn record_ignored(&mut self) {
+        self.ignored_entries += 1;
+    }
 
     #[cfg(feature = "control-plane")]
     pub fn success_rate(&self) -> f64 {
-        if self.total_mounts == 0 { 0.0 } else { self.successful_mounts as f64 * 100.0 / self.total_mounts as f64 }
+        if self.total_mounts == 0 {
+            0.0
+        } else {
+            self.successful_mounts as f64 * 100.0 / self.total_mounts as f64
+        }
     }
 
     pub fn merge(&mut self, other: &Self) {
@@ -138,10 +169,15 @@ impl RuntimeState {
         if self.cached_status_value.is_none() {
             self.cached_status_value = Some(serde_json::to_value(&*self)?);
         }
-        Ok(self.cached_status_value.as_ref().expect("cached status populated"))
+        Ok(self
+            .cached_status_value
+            .as_ref()
+            .expect("cached status populated"))
     }
 
-    fn invalidate_cache(&mut self) { self.cached_status_value = None; }
+    fn invalidate_cache(&mut self) {
+        self.cached_status_value = None;
+    }
 
     pub fn save(&self) -> Result<()> {
         let json = serde_json::to_string_pretty(self)?;
@@ -165,7 +201,10 @@ impl RuntimeState {
         #[cfg(feature = "kasumi")]
         let kasumi = kasumi::collect_runtime_info(config)?;
         #[cfg(not(feature = "kasumi"))]
-        let kasumi = { let _ = config; KasumiRuntimeInfo::default() };
+        let kasumi = {
+            let _ = config;
+            KasumiRuntimeInfo::default()
+        };
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -186,9 +225,13 @@ impl RuntimeState {
             magic_modules: result.magic_module_ids.clone(),
             kasumi_modules: {
                 #[cfg(feature = "kasumi")]
-                { result.kasumi_module_ids.clone() }
+                {
+                    result.kasumi_module_ids.clone()
+                }
                 #[cfg(not(feature = "kasumi"))]
-                { Vec::new() }
+                {
+                    Vec::new()
+                }
             },
             custom_mounts: result.custom_mount_targets.clone(),
             skip_mount_modules: inventory.skip_mount_modules.clone(),
@@ -248,8 +291,12 @@ fn collect_mode_stats(result: &ExecutionResult) -> ModuleModeStats {
 fn collect_active_mounts(result: &ExecutionResult) -> Vec<String> {
     let mut active_mounts = result.overlay_partitions.clone();
     active_mounts.extend(result.vfs_partitions.iter().map(|p| format!("vfs:{p}")));
-    if !result.custom_mount_targets.is_empty() { active_mounts.push("custom-bind".to_string()); }
-    if result.kasumi_runtime_enabled { active_mounts.push("kasumi".to_string()); }
+    if !result.custom_mount_targets.is_empty() {
+        active_mounts.push("custom-bind".to_string());
+    }
+    if result.kasumi_runtime_enabled {
+        active_mounts.push("kasumi".to_string());
+    }
     active_mounts.sort();
     active_mounts.dedup();
     active_mounts

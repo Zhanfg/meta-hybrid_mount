@@ -29,8 +29,7 @@ pub(super) fn mount_magic(
     }
 
     let module_ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
-    let kasumi_fallbacks: HashSet<&str> =
-        kasumi_fallback_ids.iter().map(String::as_str).collect();
+    let kasumi_fallbacks: HashSet<&str> = kasumi_fallback_ids.iter().map(String::as_str).collect();
     let forced_magic: HashSet<&str> = forced_magic_ids.iter().map(String::as_str).collect();
     let selected_modules: Vec<Module> = modules
         .iter()

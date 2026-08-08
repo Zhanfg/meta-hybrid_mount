@@ -84,8 +84,17 @@ impl Drop for KasumiRuntimeGuard {
             return;
         }
         match crate::mount::kasumi::rollback_runtime() {
-            Ok(()) => crate::scoped_log!(warn, "executor", "Kasumi runtime rolled back after transaction failure"),
-            Err(error) => crate::scoped_log!(error, "executor", "Kasumi rollback incomplete: error={:#}", error),
+            Ok(()) => crate::scoped_log!(
+                warn,
+                "executor",
+                "Kasumi runtime rolled back after transaction failure"
+            ),
+            Err(error) => crate::scoped_log!(
+                error,
+                "executor",
+                "Kasumi rollback incomplete: error={:#}",
+                error
+            ),
         }
     }
 }
@@ -157,7 +166,10 @@ impl Executor {
                 ModuleStageFailure::new(
                     FailureStage::Execute,
                     final_kasumi_ids.clone(),
-                    anyhow::anyhow!("Failed to apply Kasumi before other mount backends: {:#}", error),
+                    anyhow::anyhow!(
+                        "Failed to apply Kasumi before other mount backends: {:#}",
+                        error
+                    ),
                 )
             })?
         } else {
@@ -205,13 +217,18 @@ impl Executor {
                     warn,
                     "executor:vfs",
                     "runtime fallback to Magic: modules={}, error={:#}",
-                    vfs_fallback_ids.iter().cloned().collect::<Vec<_>>().join(","),
+                    vfs_fallback_ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(","),
                     error
                 );
             } else {
                 for op in &plan.vfs_ops {
-                    umount_mgr::send_umountable(&op.target)
-                        .with_context(|| format!("failed to register VFS target {}", op.target.display()))?;
+                    umount_mgr::send_umountable(&op.target).with_context(|| {
+                        format!("failed to register VFS target {}", op.target.display())
+                    })?;
                     final_vfs_partitions.insert(op.partition_name.clone());
                     mount_stats.record_vfs_mount();
                 }
@@ -261,7 +278,11 @@ impl Executor {
                 ModuleStageFailure::new(
                     FailureStage::Execute,
                     magic_need_list.clone(),
-                    anyhow::anyhow!("Failed to mount Magic Mount modules [{}]: {:#}", magic_need_list.join(", "), err),
+                    anyhow::anyhow!(
+                        "Failed to mount Magic Mount modules [{}]: {:#}",
+                        magic_need_list.join(", "),
+                        err
+                    ),
                 )
             })?;
             mount_stats.merge(&magic_stats);
@@ -275,7 +296,12 @@ impl Executor {
 
         #[cfg(feature = "kasumi")]
         if kasumi_runtime_enabled && let Err(error) = crate::sys::kasumi::fix_mounts() {
-            crate::scoped_log!(warn, "executor", "Kasumi mount-id refresh failed: error={:#}", error);
+            crate::scoped_log!(
+                warn,
+                "executor",
+                "Kasumi mount-id refresh failed: error={:#}",
+                error
+            );
         }
 
         let umount_guard = if config.disable_umount {
@@ -300,9 +326,13 @@ impl Executor {
             custom_mount_targets.len(),
             {
                 #[cfg(feature = "kasumi")]
-                { final_kasumi_ids.len() }
+                {
+                    final_kasumi_ids.len()
+                }
                 #[cfg(not(feature = "kasumi"))]
-                { 0usize }
+                {
+                    0usize
+                }
             }
         );
 
