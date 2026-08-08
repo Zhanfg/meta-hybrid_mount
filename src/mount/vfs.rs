@@ -2,11 +2,15 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{path::Path, process::Command};
-
-use anyhow::{Context, Result, bail};
+use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "android"))]
-use rustix::mount::{UnmountFlags, unmount};
+use std::ffi::CString;
+
+use anyhow::{Result, bail};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use anyhow::Context;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use rustix::mount::{MountFlags, UnmountFlags, mount, unmount};
 
 use crate::core::ops::plan::VfsOperation;
 
@@ -21,35 +25,35 @@ pub fn mount_union(op: &VfsOperation) -> Result<()> {
     branches.push(op.target.to_string_lossy().into_owned());
     let option = format!("lowerdir={}", branches.join(":"));
 
-    let mount_binary = if Path::new("/system/bin/mount").is_file() {
-        "/system/bin/mount"
-    } else {
-        "mount"
-    };
-    let output = Command::new(mount_binary)
-        .args(["-t", op.backend.as_str(), "none"])
-        .arg(&op.target)
-        .args(["-o", option.as_str()])
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to execute {} for {}",
-                mount_binary,
-                op.target.display()
-            )
-        })?;
+    mount_vfs(op, &option)
+}
 
-    if !output.status.success() {
-        bail!(
-            "{} mount failed for {} (status={}): {}",
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn mount_vfs(op: &VfsOperation, option: &str) -> Result<()> {
+    let data = CString::new(option).context("VFS mount options contain an interior NUL")?;
+    mount(
+        "none",
+        &op.target,
+        op.backend.as_str(),
+        MountFlags::empty(),
+        Some(data.as_c_str()),
+    )
+    .with_context(|| {
+        format!(
+            "{} mount syscall failed for {}",
             op.backend,
-            op.target.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
+            op.target.display()
+        )
+    })?;
     Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn mount_vfs(op: &VfsOperation, _option: &str) -> Result<()> {
+    bail!(
+        "{} VFS mounting is only supported on linux/android",
+        op.backend
+    )
 }
 
 pub fn rollback_targets(targets: &[std::path::PathBuf]) -> Result<()> {
@@ -152,6 +156,19 @@ mod tests {
             target: PathBuf::from("/system"),
             lowerdirs: vec![PathBuf::from("/data/adb/modules/a/system")],
             module_ids: vec!["a".to_string()],
+            max_branches: 5,
+        };
+        assert!(validate_operation(&op).is_err());
+    }
+
+    #[test]
+    fn rejects_colon_in_lowerdir_before_option_serialization() {
+        let op = VfsOperation {
+            backend: "mirage".to_string(),
+            partition_name: "system".to_string(),
+            target: PathBuf::from("/system"),
+            lowerdirs: vec![PathBuf::from("/data/adb/modules/bad:module/system")],
+            module_ids: vec!["bad".to_string()],
             max_branches: 5,
         };
         assert!(validate_operation(&op).is_err());

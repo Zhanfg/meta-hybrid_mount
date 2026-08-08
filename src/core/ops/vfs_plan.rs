@@ -45,7 +45,7 @@ pub fn select_vfs_modules(
         .map(|module| module.id.clone())
         .collect();
 
-    if candidates.is_empty() {
+    if candidates.is_empty() || capabilities.vfs_status() == "disabled" {
         return Ok(VfsSelection::default());
     }
 
@@ -110,9 +110,10 @@ pub fn select_vfs_modules(
 
     let mut operations = Vec::new();
     for (partition, mut members) in grouped {
-        // Inventory IDs are sorted ascending; both the historical NoMountFS
-        // manager and current union semantics expect the last module to win.
-        // Put the highest-priority module first in lowerdir order.
+        // The existing inventory is deterministic. Match both historical
+        // NoMountFS and current Mirage union semantics: first lowerdir wins.
+        // Alphabetically later module IDs have higher priority in the legacy
+        // manager, therefore emit them first.
         members.sort_by(|a, b| b.id.cmp(&a.id));
         let raw_target = system_root.join(&partition);
         let target = fs::canonicalize(&raw_target)
@@ -155,7 +156,16 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{conf::config::Config, domain::ModuleRules};
+    use crate::domain::ModuleRules;
+
+    fn capabilities(status: &str, usable: bool, max_branches: usize) -> BackendCapabilities {
+        BackendCapabilities::for_vfs_test(
+            status,
+            usable,
+            usable.then_some("mirage"),
+            max_branches,
+        )
+    }
 
     fn module(root: &Path, id: &str, mode: MountMode, partition: &str) -> Module {
         let source = root.join(id);
@@ -171,19 +181,113 @@ mod tests {
     }
 
     #[test]
-    fn disabled_vfs_falls_back_without_changing_overlay_semantics() {
+    fn disabled_vfs_is_not_reported_as_fallback() {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("system")).unwrap();
         let modules = vec![module(temp.path(), "a", MountMode::Overlay, "system")];
-        let capabilities = BackendCapabilities::detect(&Config::default()).unwrap();
         let selection = select_vfs_modules(
             &modules,
             temp.path(),
-            &capabilities,
+            &capabilities("disabled", false, 5),
+            &["system".to_string()],
+        )
+        .unwrap();
+        assert!(selection.operations.is_empty());
+        assert!(selection.module_ids.is_empty());
+        assert!(selection.fallback_module_ids.is_empty());
+    }
+
+    #[test]
+    fn unavailable_requested_backend_falls_back_to_overlay() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("system")).unwrap();
+        let modules = vec![module(temp.path(), "a", MountMode::Overlay, "system")];
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("unavailable", false, 5),
             &["system".to_string()],
         )
         .unwrap();
         assert!(selection.operations.is_empty());
         assert_eq!(selection.fallback_module_ids, vec!["a"]);
+    }
+
+    #[test]
+    fn mixed_backend_partition_falls_back_to_overlay() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("system")).unwrap();
+        let modules = vec![
+            module(temp.path(), "a", MountMode::Overlay, "system"),
+            module(temp.path(), "magic", MountMode::Magic, "system"),
+        ];
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("mirage", true, 5),
+            &["system".to_string()],
+        )
+        .unwrap();
+        assert!(selection.operations.is_empty());
+        assert_eq!(selection.fallback_module_ids, vec!["a"]);
+    }
+
+    #[test]
+    fn branch_overflow_falls_back_before_mount() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("system")).unwrap();
+        let modules = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(|id| module(temp.path(), id, MountMode::Overlay, "system"))
+            .collect::<Vec<_>>();
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("mirage", true, 5),
+            &["system".to_string()],
+        )
+        .unwrap();
+        assert!(selection.operations.is_empty());
+        assert_eq!(selection.fallback_module_ids, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn missing_physical_target_falls_back() {
+        let temp = TempDir::new().unwrap();
+        let modules = vec![module(temp.path(), "a", MountMode::Overlay, "system")];
+        let target_root = temp.path().join("physical");
+        fs::create_dir_all(&target_root).unwrap();
+        let selection = select_vfs_modules(
+            &modules,
+            &target_root,
+            &capabilities("mirage", true, 5),
+            &["system".to_string()],
+        )
+        .unwrap();
+        assert!(selection.operations.is_empty());
+        assert_eq!(selection.fallback_module_ids, vec!["a"]);
+    }
+
+    #[test]
+    fn legacy_priority_maps_to_first_lowerdir_wins() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("system")).unwrap();
+        let modules = vec![
+            module(temp.path(), "a", MountMode::Overlay, "system"),
+            module(temp.path(), "z", MountMode::Overlay, "system"),
+        ];
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("mirage", true, 5),
+            &["system".to_string()],
+        )
+        .unwrap();
+        assert_eq!(selection.operations.len(), 1);
+        assert!(selection.fallback_module_ids.is_empty());
+        let op = &selection.operations[0];
+        assert_eq!(op.module_ids, vec!["z", "a"]);
+        assert!(op.lowerdirs[0].starts_with(temp.path().join("z")));
+        assert!(op.lowerdirs[1].starts_with(temp.path().join("a")));
     }
 }

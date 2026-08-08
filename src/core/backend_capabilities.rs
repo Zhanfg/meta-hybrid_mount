@@ -93,6 +93,23 @@ impl BackendCapabilities {
     pub fn vfs_max_branches(&self) -> usize {
         self.vfs_max_branches
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_vfs_test(
+        status: &str,
+        usable: bool,
+        fs_type: Option<&str>,
+        max_branches: usize,
+    ) -> Self {
+        Self {
+            kasumi_status: "disabled".to_string(),
+            kasumi_usable: false,
+            vfs_status: status.to_string(),
+            vfs_usable: usable,
+            vfs_fs_type: fs_type.map(str::to_string),
+            vfs_max_branches: max_branches,
+        }
+    }
 }
 
 fn detect_vfs(config: &Config) -> (String, bool, Option<String>) {
