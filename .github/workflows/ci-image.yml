@@ -20,7 +20,7 @@ permissions:
   packages: write
 
 env:
-  CI_IMAGE: ghcr.io/hybrid-mount/meta-hybrid_mount-ci
+  CI_IMAGE: ghcr.io/zhanfg/meta-hybrid_mount-ci
 
 jobs:
   build:
