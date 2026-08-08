@@ -37,8 +37,8 @@ import TopBar from "./components/TopBar";
 import NavBar from "./components/NavBar";
 import Toast from "./components/Toast";
 
-const loadStatusTab = () => import("./routes/StatusTab");
-const loadConfigTab = () => import("./routes/ConfigTab");
+const loadStatusTab = () => import("./routes/StatusPage");
+const loadConfigTab = () => import("./routes/ConfigPage");
 const loadModulesTab = () => import("./routes/ModulesTab");
 const loadInfoTab = () => import("./routes/InfoTab");
 
