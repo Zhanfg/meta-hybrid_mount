@@ -21,6 +21,7 @@ export function buildModeStats(
   state: RuntimeStatePayload,
 ): NonNullable<StorageStatus["modeStats"]> {
   return {
+    vfs: state.mode_stats.vfs,
     overlay: state.mode_stats.overlayfs,
     magic: state.mode_stats.magicmount,
     kasumi: state.mode_stats.kasumi,
@@ -30,6 +31,7 @@ export function buildModeStats(
 
 export function buildMountedCount(state: RuntimeStatePayload): number {
   return (
+    state.vfs_modules.length +
     state.overlay_modules.length +
     state.magic_modules.length +
     state.kasumi_modules.length
