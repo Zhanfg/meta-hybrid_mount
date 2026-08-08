@@ -8,10 +8,42 @@ on:
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
 
 jobs:
+  release-preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and main ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Unsupported release tag: $TAG"
+            exit 1
+          fi
+
+          git fetch origin main --no-tags
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release blocked: tagged commit $GITHUB_SHA is not contained in origin/main."
+            echo "Merge and validate the candidate before creating the release tag."
+            exit 1
+          fi
+
   build-kasumi-lkm:
+    needs: release-preflight
     uses: ./.github/workflows/build-kasumi-lkm.yml
     secrets: inherit
     with:
@@ -19,10 +51,13 @@ jobs:
       kasumi_ref: 4aab6b519dadae6f43776f66a208ea5ae0fc8a3e
 
   build:
-    needs: [build-kasumi-lkm]
+    needs: [release-preflight, build-kasumi-lkm]
     name: Build ${{ matrix.flavor }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +102,7 @@ jobs:
           set -euo pipefail
           mapfile -t UAPI_FILES < <(find kasumi_uapi_artifact -type f -name kasumi_uapi.h | sort)
           if [ "${#UAPI_FILES[@]}" -ne 1 ]; then
-            echo "Expected exactly one kasumi_uapi.h artifact, found ${#UAPI_FILES[@]}:"
+            echo "Expected exactly one kasumi_uapi.h artifact, found ${#UAPI_FILES[@]}."
             find kasumi_uapi_artifact -type f -print | sort
             exit 1
           fi
@@ -76,7 +111,28 @@ jobs:
             diff -u src/sys/kasumi_uapi.h "${UAPI_FILES[0]}" || true
             exit 1
           fi
-          sha256sum src/sys/kasumi_uapi.h "${UAPI_FILES[0]}"
+
+      - name: Configure release update channel
+        env:
+          BUILD_FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -euo pipefail
+          RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main"
+          case "$BUILD_FLAVOR" in
+            full)
+              sed -i "s|^update = \".*\"|update = \"$RAW_BASE/update.json\"|" Cargo.toml
+              ;;
+            lite)
+              sed -i "s|^lite_update = \".*\"|lite_update = \"$RAW_BASE/update-lite.json\"|" Cargo.toml
+              ;;
+            nano)
+              sed -i "s|^nano_update = \".*\"|nano_update = \"$RAW_BASE/update-nano.json\"|" Cargo.toml
+              ;;
+            *)
+              echo "Unknown build flavor: $BUILD_FLAVOR"
+              exit 1
+              ;;
+          esac
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -91,12 +147,12 @@ jobs:
           HYBRID_MOUNT_KASUMI_LKM_DIR: ${{ github.workspace }}/kasumi_lkm_artifacts
         run: |
           set -euo pipefail
-          ls -la "$HYBRID_MOUNT_KASUMI_LKM_DIR" || true
           rm -rf output
-          cargo xtask build --release --tag "${{ github.ref_name }}" --flavor ${{ matrix.flavor }}
+          cargo xtask build --release --tag "${GITHUB_REF_NAME}" --flavor "${{ matrix.flavor }}"
 
           ZIP_PATH="$(find output -maxdepth 1 -type f -name '*.zip' | sort | head -n 1)"
           test -n "$ZIP_PATH"
+          test -s "$ZIP_PATH"
           ZIP_FILENAME="$(basename "$ZIP_PATH")"
           STAGED_ZIP="/tmp/$ZIP_FILENAME"
           cp "$ZIP_PATH" "$STAGED_ZIP"
@@ -128,6 +184,13 @@ jobs:
           grep -Eq '^versionCode=1[0-9]{9}$' "$STAGE_DIR/module.prop"
           grep -Fx 'metamodule=1' "$STAGE_DIR/module.prop"
           file "$STAGE_DIR/binaries/hybrid-mount" | grep -Eq 'ELF 64-bit.*ARM aarch64'
+
+          case "$BUILD_FLAVOR" in
+            full) EXPECTED_UPDATE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/update.json" ;;
+            lite) EXPECTED_UPDATE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/update-lite.json" ;;
+            nano) EXPECTED_UPDATE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/update-nano.json" ;;
+          esac
+          grep -Fx "updateJson=$EXPECTED_UPDATE" "$STAGE_DIR/module.prop"
 
           (
             cd "$STAGE_DIR"
@@ -174,27 +237,6 @@ jobs:
       - name: Trust checkout directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Detect Release Type
-        id: release_type
-        run: |
-          set -euo pipefail
-          tag="${{ github.ref_name }}"
-          version="${tag#v}"
-          prerelease=true
-          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            patch="${version##*.}"
-            if [[ "$patch" == "0" ]]; then
-              prerelease=false
-            fi
-          fi
-          if [[ "$prerelease" == "true" ]]; then
-            release_type="pre-release"
-          else
-            release_type="release"
-          fi
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "release_type=$release_type" >> "$GITHUB_OUTPUT"
-
       - name: Download package artifacts
         uses: actions/download-artifact@v8
         with:
@@ -202,7 +244,7 @@ jobs:
           pattern: package-*
           merge-multiple: true
 
-      - name: Resolve package paths
+      - name: Resolve and verify packages
         id: paths
         run: |
           set -euo pipefail
@@ -212,63 +254,42 @@ jobs:
           test -n "$FULL_ZIP" && test -s "$FULL_ZIP"
           test -n "$LITE_ZIP" && test -s "$LITE_ZIP"
           test -n "$NANO_ZIP" && test -s "$NANO_ZIP"
+
+          read_version_code() {
+            unzip -p "$1" module.prop | sed -n 's/^versionCode=//p' | head -n 1
+          }
+          FULL_VERSION_CODE="$(read_version_code "$FULL_ZIP")"
+          LITE_VERSION_CODE="$(read_version_code "$LITE_ZIP")"
+          NANO_VERSION_CODE="$(read_version_code "$NANO_ZIP")"
+
+          if [[ ! "$FULL_VERSION_CODE" =~ ^1[0-9]{9}$ ]]; then
+            echo "Invalid fork versionCode: $FULL_VERSION_CODE"
+            exit 1
+          fi
+          if [ "$FULL_VERSION_CODE" != "$LITE_VERSION_CODE" ] || [ "$FULL_VERSION_CODE" != "$NANO_VERSION_CODE" ]; then
+            echo "Flavor versionCode mismatch: full=$FULL_VERSION_CODE lite=$LITE_VERSION_CODE nano=$NANO_VERSION_CODE"
+            exit 1
+          fi
+
+          sha256sum "$FULL_ZIP" "$LITE_ZIP" "$NANO_ZIP" | tee SHA256SUMS.txt
+
           echo "full_zip=$FULL_ZIP" >> "$GITHUB_OUTPUT"
           echo "lite_zip=$LITE_ZIP" >> "$GITHUB_OUTPUT"
           echo "nano_zip=$NANO_ZIP" >> "$GITHUB_OUTPUT"
           echo "full_name=$(basename "$FULL_ZIP")" >> "$GITHUB_OUTPUT"
           echo "lite_name=$(basename "$LITE_ZIP")" >> "$GITHUB_OUTPUT"
           echo "nano_name=$(basename "$NANO_ZIP")" >> "$GITHUB_OUTPUT"
-          ls -la "$FULL_ZIP" "$LITE_ZIP" "$NANO_ZIP"
-
-      - name: Notify Telegram album
-        env:
-          HYBRID_MOUNT_NOTIFY: "1"
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          set -euo pipefail
-          NOTIFY_DIR="/tmp/hybrid-mount-release-notify"
-          rm -rf "$NOTIFY_DIR"
-          mkdir -p "$NOTIFY_DIR"
-          cp "${{ steps.paths.outputs.full_zip }}" "$NOTIFY_DIR/"
-          cp "${{ steps.paths.outputs.lite_zip }}" "$NOTIFY_DIR/"
-          cp "${{ steps.paths.outputs.nano_zip }}" "$NOTIFY_DIR/"
-          cargo xtask notify \
-            --output "$NOTIFY_DIR" \
-            --label "丰收 (Harvest) [full+lite+nano] - ${{ github.ref_name }}" \
-            --topic-id 6
+          echo "version_code=$FULL_VERSION_CODE" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Release Metadata
         run: |
           set -euo pipefail
-          REPO="${{ github.repository }}"
-          TAG="${{ github.ref_name }}"
-
-          FULL_ZIP="${{ steps.paths.outputs.full_zip }}"
-          LITE_ZIP="${{ steps.paths.outputs.lite_zip }}"
-          NANO_ZIP="${{ steps.paths.outputs.nano_zip }}"
+          REPO="$GITHUB_REPOSITORY"
+          TAG="$GITHUB_REF_NAME"
+          VERSION_CODE="${{ steps.paths.outputs.version_code }}"
           FULL_NAME="${{ steps.paths.outputs.full_name }}"
           LITE_NAME="${{ steps.paths.outputs.lite_name }}"
           NANO_NAME="${{ steps.paths.outputs.nano_name }}"
-
-          read_version_code() {
-            local zip_path="$1"
-            unzip -p "$zip_path" module.prop | sed -n 's/^versionCode=//p' | head -n 1
-          }
-
-          FULL_VERSION_CODE="$(read_version_code "$FULL_ZIP")"
-          LITE_VERSION_CODE="$(read_version_code "$LITE_ZIP")"
-          NANO_VERSION_CODE="$(read_version_code "$NANO_ZIP")"
-
-          if [[ ! "$FULL_VERSION_CODE" =~ ^1[0-9]{9}$ ]]; then
-            echo "Invalid fork versionCode in Full package: $FULL_VERSION_CODE"
-            exit 1
-          fi
-          if [ "$FULL_VERSION_CODE" != "$LITE_VERSION_CODE" ] || [ "$FULL_VERSION_CODE" != "$NANO_VERSION_CODE" ]; then
-            echo "Release flavor versionCode mismatch: full=$FULL_VERSION_CODE lite=$LITE_VERSION_CODE nano=$NANO_VERSION_CODE"
-            exit 1
-          fi
-          VERSION_CODE="$FULL_VERSION_CODE"
 
           FULL_DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$FULL_NAME"
           LITE_DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$LITE_NAME"
@@ -306,13 +327,11 @@ jobs:
         run: |
           set -euo pipefail
           if command -v jq >/dev/null 2>&1; then
-            jq --version
             exit 0
           fi
           apt-get update
           apt-get install -y --no-install-recommends jq
           rm -rf /var/lib/apt/lists/*
-          jq --version
 
       - name: Generate Changelog
         id: git-cliff
@@ -325,50 +344,21 @@ jobs:
           OUTPUT: /tmp/changelog.md
           GITHUB_REPO: ${{ github.repository }}
 
-      - name: Create Release (Local)
+      - name: Create local GitHub Release
         uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           draft: false
-          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             ${{ steps.paths.outputs.full_zip }}
             ${{ steps.paths.outputs.lite_zip }}
             ${{ steps.paths.outputs.nano_zip }}
+            SHA256SUMS.txt
           body_path: /tmp/changelog.md
 
-      - name: Create Remote Release (KernelSU-Repo)
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      - name: Sync release metadata to main
         run: |
           set -euo pipefail
-          repo="KernelSU-Modules-Repo/hybrid_mount"
-          tag="${{ github.ref_name }}"
-          prerelease="${{ steps.release_type.outputs.prerelease }}"
-
-          prerelease_flag=""
-          if [[ "$prerelease" == "true" ]]; then
-            prerelease_flag="--prerelease"
-          fi
-
-          gh release create "$tag" \
-            --repo "$repo" \
-            --draft \
-            $prerelease_flag \
-            --title "$tag" \
-            --notes-file /tmp/changelog.md \
-            "${{ steps.paths.outputs.full_zip }}" \
-            "${{ steps.paths.outputs.lite_zip }}" \
-            "${{ steps.paths.outputs.nano_zip }}"
-
-          gh release edit "$tag" \
-            --repo "$repo" \
-            --draft=false
-
-      - name: Sync Version to Main
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -380,15 +370,12 @@ jobs:
           mv /tmp/update-nano.json update-nano.json
           cat /tmp/changelog.md | cat - changelog.md > temp && mv temp changelog.md
 
-          TAG="${{ github.ref_name }}"
-          CLEAN_VERSION="${TAG#v}"
+          CLEAN_VERSION="${GITHUB_REF_NAME#v}"
           sed -i "s/^version = \".*\"/version = \"${CLEAN_VERSION}\"/" Cargo.toml
-
           cargo update
 
           git add update.json update-lite.json update-nano.json changelog.md Cargo.toml Cargo.lock
-
           if ! git diff --staged --quiet; then
-            git commit -m "chore(release): sync version ${{ github.ref_name }} [skip ci]"
+            git commit -m "chore(release): sync version ${GITHUB_REF_NAME} [skip ci]"
             git push origin main
           fi
