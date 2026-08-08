@@ -159,12 +159,7 @@ mod tests {
     use crate::domain::ModuleRules;
 
     fn capabilities(status: &str, usable: bool, max_branches: usize) -> BackendCapabilities {
-        BackendCapabilities::for_vfs_test(
-            status,
-            usable,
-            usable.then_some("mirage"),
-            max_branches,
-        )
+        BackendCapabilities::for_vfs_test(status, usable, usable.then_some("mirage"), max_branches)
     }
 
     fn module(root: &Path, id: &str, mode: MountMode, partition: &str) -> Module {
