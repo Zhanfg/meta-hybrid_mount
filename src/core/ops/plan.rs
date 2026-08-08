@@ -73,23 +73,32 @@ pub struct MountPlan {
 impl MountPlan {
     pub fn kasumi_count(&self) -> usize {
         #[cfg(feature = "kasumi")]
-        { self.kasumi_module_ids.len() }
+        {
+            self.kasumi_module_ids.len()
+        }
         #[cfg(not(feature = "kasumi"))]
-        { 0 }
+        {
+            0
+        }
     }
 
     pub fn kasumi_fallback_ids(&self) -> &[String] {
         #[cfg(feature = "kasumi")]
-        { &self.kasumi_fallback_module_ids }
+        {
+            &self.kasumi_fallback_module_ids
+        }
         #[cfg(not(feature = "kasumi"))]
-        { &[] }
+        {
+            &[]
+        }
     }
 
     #[cfg(feature = "kasumi")]
     pub fn degrade_kasumi_to_magic(&mut self) -> usize {
         let downgraded = std::mem::take(&mut self.kasumi_module_ids);
         let changed = downgraded.len();
-        self.kasumi_fallback_module_ids.extend(downgraded.iter().cloned());
+        self.kasumi_fallback_module_ids
+            .extend(downgraded.iter().cloned());
         self.kasumi_fallback_module_ids.sort();
         self.kasumi_fallback_module_ids.dedup();
         self.magic_module_ids.extend(downgraded);
@@ -105,6 +114,7 @@ impl MountPlan {
 #[cfg(all(test, feature = "kasumi"))]
 mod tests {
     use std::path::PathBuf;
+
     use super::{KasumiAddRule, KasumiMergeRule, MountPlan};
 
     #[test]
@@ -112,8 +122,15 @@ mod tests {
         let mut plan = MountPlan {
             magic_module_ids: vec!["existing".to_string()],
             kasumi_module_ids: vec!["b".to_string(), "a".to_string(), "existing".to_string()],
-            kasumi_add_rules: vec![KasumiAddRule { target: "/system/a".to_string(), source: PathBuf::from("/dev/a"), file_type: 1 }],
-            kasumi_merge_rules: vec![KasumiMergeRule { target: "/system/b".to_string(), source: PathBuf::from("/dev/b") }],
+            kasumi_add_rules: vec![KasumiAddRule {
+                target: "/system/a".to_string(),
+                source: PathBuf::from("/dev/a"),
+                file_type: 1,
+            }],
+            kasumi_merge_rules: vec![KasumiMergeRule {
+                target: "/system/b".to_string(),
+                source: PathBuf::from("/dev/b"),
+            }],
             kasumi_hide_rules: vec!["/system/c".to_string()],
             ..MountPlan::default()
         };

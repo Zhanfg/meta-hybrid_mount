@@ -6,8 +6,10 @@ use std::{
     collections::{BTreeSet, HashSet},
     ffi::CString,
     fs::{self, File, OpenOptions},
-    os::fd::AsRawFd,
-    os::unix::{ffi::OsStrExt, fs::FileTypeExt},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, fs::FileTypeExt},
+    },
     path::{Path, PathBuf},
 };
 
@@ -136,7 +138,11 @@ impl DriverOps for Driver {
             IOCTL_GET_VERSION,
             (&mut version as *mut i32).cast::<libc::c_void>(),
         )?;
-        let value = if ret > 0 { ret as u32 } else { version.max(0) as u32 };
+        let value = if ret > 0 {
+            ret as u32
+        } else {
+            version.max(0) as u32
+        };
         if value == 0 {
             bail!("ZeroMount driver returned version 0");
         }
@@ -155,11 +161,7 @@ impl DriverOps for Driver {
                     .downcast_ref::<std::io::Error>()
                     .and_then(std::io::Error::raw_os_error)
                     .is_some_and(|errno| errno == libc::ENOTTY || errno == libc::EINVAL);
-                if unsupported {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
+                if unsupported { Ok(None) } else { Err(error) }
             }
         }
     }
@@ -176,8 +178,13 @@ impl DriverOps for Driver {
     }
 
     fn add_rule(&self, rule: &RedirectRule) -> Result<()> {
-        let virtual_path = CString::new(rule.virtual_path.as_os_str().as_bytes())
-            .with_context(|| format!("invalid ZeroMount virtual path {}", rule.virtual_path.display()))?;
+        let virtual_path =
+            CString::new(rule.virtual_path.as_os_str().as_bytes()).with_context(|| {
+                format!(
+                    "invalid ZeroMount virtual path {}",
+                    rule.virtual_path.display()
+                )
+            })?;
         let real_path = CString::new(rule.real_path.as_os_str().as_bytes())
             .with_context(|| format!("invalid ZeroMount real path {}", rule.real_path.display()))?;
         let mut data = IoctlData {
@@ -187,7 +194,10 @@ impl DriverOps for Driver {
             #[cfg(target_pointer_width = "64")]
             _pad: 0,
         };
-        self.raw_ioctl(IOCTL_ADD_RULE, (&mut data as *mut IoctlData).cast::<libc::c_void>())?;
+        self.raw_ioctl(
+            IOCTL_ADD_RULE,
+            (&mut data as *mut IoctlData).cast::<libc::c_void>(),
+        )?;
         Ok(())
     }
 
@@ -264,15 +274,13 @@ fn tree_has_unsupported_overlay_semantics(root: &Path) -> Result<bool> {
             return Ok(true);
         }
         if file_type.is_dir() {
-            for entry in fs::read_dir(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?
+            for entry in
+                fs::read_dir(&path).with_context(|| format!("failed to read {}", path.display()))?
             {
                 let entry = entry?;
                 let child = entry.path();
                 let name = entry.file_name();
-                if name == defs::REPLACE_DIR_FILE_NAME
-                    || name.as_bytes().starts_with(b".wh.")
-                {
+                if name == defs::REPLACE_DIR_FILE_NAME || name.as_bytes().starts_with(b".wh.") {
                     return Ok(true);
                 }
                 stack.push(child);
@@ -395,7 +403,10 @@ fn collect_rules(
     let file_type = metadata.file_type();
 
     if is_partition_root(&target, managed_partitions) && !file_type.is_dir() {
-        bail!("refusing ZeroMount rule that replaces partition root {}", target.display());
+        bail!(
+            "refusing ZeroMount rule that replaces partition root {}",
+            target.display()
+        );
     }
 
     if file_type.is_dir() {
@@ -421,7 +432,10 @@ fn collect_rules(
             let child = entry.path();
             let name = entry.file_name();
             if name == defs::REPLACE_DIR_FILE_NAME || name.as_bytes().starts_with(b".wh.") {
-                bail!("unsupported ZeroMount overlay marker at {}", child.display());
+                bail!(
+                    "unsupported ZeroMount overlay marker at {}",
+                    child.display()
+                );
             }
             collect_rules(module_root, &child, rules, seen_virtual, managed_partitions)?;
         }
@@ -429,7 +443,10 @@ fn collect_rules(
     }
 
     if file_type.is_char_device() || has_overlay_control_xattr(source)? {
-        bail!("unsupported ZeroMount overlay entry at {}", source.display());
+        bail!(
+            "unsupported ZeroMount overlay entry at {}",
+            source.display()
+        );
     }
 
     if seen_virtual.insert(target.clone()) {
@@ -463,7 +480,10 @@ pub(crate) fn resolve_target_path(relative: &Path) -> Option<PathBuf> {
         if value == *alias {
             return Some(Path::new("/").join(canonical));
         }
-        if let Some(rest) = value.strip_prefix(alias).and_then(|rest| rest.strip_prefix('/')) {
+        if let Some(rest) = value
+            .strip_prefix(alias)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
             return Some(Path::new("/").join(canonical).join(rest));
         }
     }
@@ -475,7 +495,10 @@ enum ApplyFailure {
     Fatal(anyhow::Error),
 }
 
-fn apply_rules_transaction<D: DriverOps>(driver: &D, rules: &[RedirectRule]) -> std::result::Result<(), ApplyFailure> {
+fn apply_rules_transaction<D: DriverOps>(
+    driver: &D,
+    rules: &[RedirectRule],
+) -> std::result::Result<(), ApplyFailure> {
     for rule in rules {
         if let Err(error) = driver.add_rule(rule) {
             return cleanup_after_failure(driver, format!("rule_injection_failed: {error:#}"));
@@ -490,7 +513,10 @@ fn apply_rules_transaction<D: DriverOps>(driver: &D, rules: &[RedirectRule]) -> 
     Ok(())
 }
 
-fn cleanup_after_failure<D: DriverOps>(driver: &D, reason: String) -> std::result::Result<(), ApplyFailure> {
+fn cleanup_after_failure<D: DriverOps>(
+    driver: &D,
+    reason: String,
+) -> std::result::Result<(), ApplyFailure> {
     match cleanup_driver(driver) {
         Ok(()) => Err(ApplyFailure::Fallback(reason)),
         Err(error) => Err(ApplyFailure::Fatal(anyhow!(
@@ -584,19 +610,39 @@ mod tests {
     }
 
     impl DriverOps for MockDriver {
-        fn version(&self) -> Result<u32> { Ok(self.version) }
-        fn status(&self) -> Result<Option<bool>> { Ok(Some(self.enabled)) }
-        fn list_rules(&self) -> Result<String> { Ok(self.rules.clone()) }
+        fn version(&self) -> Result<u32> {
+            Ok(self.version)
+        }
+        fn status(&self) -> Result<Option<bool>> {
+            Ok(Some(self.enabled))
+        }
+        fn list_rules(&self) -> Result<String> {
+            Ok(self.rules.clone())
+        }
         fn add_rule(&self, _rule: &RedirectRule) -> Result<()> {
             let mut count = self.add_count.borrow_mut();
             *count += 1;
-            if self.fail_add_at == Some(*count) { bail!("injected failure"); }
+            if self.fail_add_at == Some(*count) {
+                bail!("injected failure");
+            }
             Ok(())
         }
-        fn enable(&self) -> Result<()> { *self.enable_calls.borrow_mut() += 1; Ok(()) }
-        fn disable(&self) -> Result<()> { *self.disable_calls.borrow_mut() += 1; Ok(()) }
-        fn clear_all(&self) -> Result<()> { *self.clear_calls.borrow_mut() += 1; Ok(()) }
-        fn refresh(&self) -> Result<()> { *self.refresh_calls.borrow_mut() += 1; Ok(()) }
+        fn enable(&self) -> Result<()> {
+            *self.enable_calls.borrow_mut() += 1;
+            Ok(())
+        }
+        fn disable(&self) -> Result<()> {
+            *self.disable_calls.borrow_mut() += 1;
+            Ok(())
+        }
+        fn clear_all(&self) -> Result<()> {
+            *self.clear_calls.borrow_mut() += 1;
+            Ok(())
+        }
+        fn refresh(&self) -> Result<()> {
+            *self.refresh_calls.borrow_mut() += 1;
+            Ok(())
+        }
     }
 
     fn rule(name: &str) -> RedirectRule {

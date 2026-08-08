@@ -32,7 +32,9 @@ pub fn select_vfs_modules(
 ) -> Result<VfsSelection> {
     let candidates: BTreeSet<String> = modules
         .iter()
-        .filter(|module| module.rules.default_mode == MountMode::Overlay && module.rules.paths.is_empty())
+        .filter(|module| {
+            module.rules.default_mode == MountMode::Overlay && module.rules.paths.is_empty()
+        })
         .filter(|module| !active_partitions(module, managed_partitions).is_empty())
         .map(|module| module.id.clone())
         .collect();
@@ -79,7 +81,9 @@ pub fn select_vfs_modules(
                 other_backend_present = true;
             }
         }
-        if vfs_ids.is_empty() { continue; }
+        if vfs_ids.is_empty() {
+            continue;
+        }
         let target = system_root.join(partition);
         let unsafe_partition = if backend == "zeromount" {
             // First safe ZeroMount generation: only one REHYBIRD VFS module may
@@ -106,7 +110,9 @@ pub fn select_vfs_modules(
         let mut grouped: BTreeMap<String, Vec<&Module>> = BTreeMap::new();
         for partition in managed_partitions {
             for module in modules {
-                if selected_set.contains(module.id.as_str()) && module.source_path.join(partition).is_dir() {
+                if selected_set.contains(module.id.as_str())
+                    && module.source_path.join(partition).is_dir()
+                {
                     grouped.entry(partition.clone()).or_default().push(module);
                 }
             }
@@ -114,8 +120,9 @@ pub fn select_vfs_modules(
         for (partition, mut members) in grouped {
             members.sort_by(|a, b| b.id.cmp(&a.id));
             let raw_target = system_root.join(&partition);
-            let target = fs::canonicalize(&raw_target)
-                .with_context(|| format!("failed to resolve VFS target {}", raw_target.display()))?;
+            let target = fs::canonicalize(&raw_target).with_context(|| {
+                format!("failed to resolve VFS target {}", raw_target.display())
+            })?;
             let lowerdirs = members
                 .iter()
                 .map(|module| module.source_path.join(&partition))
@@ -151,11 +158,18 @@ fn active_partitions(module: &Module, managed_partitions: &[String]) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, fs};
+
     use tempfile::TempDir;
+
     use super::*;
     use crate::domain::ModuleRules;
 
-    fn capabilities(status: &str, usable: bool, backend: Option<&str>, max_branches: usize) -> BackendCapabilities {
+    fn capabilities(
+        status: &str,
+        usable: bool,
+        backend: Option<&str>,
+        max_branches: usize,
+    ) -> BackendCapabilities {
         BackendCapabilities::for_vfs_test(status, usable, backend, max_branches)
     }
 
@@ -165,7 +179,10 @@ mod tests {
         Module {
             id: id.to_string(),
             source_path: source,
-            rules: ModuleRules { default_mode: mode, paths: HashMap::new() },
+            rules: ModuleRules {
+                default_mode: mode,
+                paths: HashMap::new(),
+            },
         }
     }
 
@@ -174,7 +191,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("system")).unwrap();
         let modules = vec![module(temp.path(), "a", MountMode::Overlay, "system")];
-        let selection = select_vfs_modules(&modules, temp.path(), &capabilities("disabled", false, None, 5), &["system".to_string()]).unwrap();
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("disabled", false, None, 5),
+            &["system".to_string()],
+        )
+        .unwrap();
         assert!(selection.operations.is_empty());
         assert!(selection.fallback_module_ids.is_empty());
     }
@@ -183,8 +206,17 @@ mod tests {
     fn union_branch_overflow_falls_back_before_mount() {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("system")).unwrap();
-        let modules = ["a", "b", "c", "d", "e"].into_iter().map(|id| module(temp.path(), id, MountMode::Overlay, "system")).collect::<Vec<_>>();
-        let selection = select_vfs_modules(&modules, temp.path(), &capabilities("mirage", true, Some("mirage"), 5), &["system".to_string()]).unwrap();
+        let modules = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(|id| module(temp.path(), id, MountMode::Overlay, "system"))
+            .collect::<Vec<_>>();
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("mirage", true, Some("mirage"), 5),
+            &["system".to_string()],
+        )
+        .unwrap();
         assert!(selection.operations.is_empty());
         assert_eq!(selection.fallback_module_ids, vec!["a", "b", "c", "d", "e"]);
     }
@@ -197,7 +229,13 @@ mod tests {
             module(temp.path(), "a", MountMode::Overlay, "system"),
             module(temp.path(), "b", MountMode::Overlay, "system"),
         ];
-        let selection = select_vfs_modules(&modules, temp.path(), &capabilities("zeromount_v1", true, Some("zeromount"), 5), &["system".to_string()]).unwrap();
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("zeromount_v1", true, Some("zeromount"), 5),
+            &["system".to_string()],
+        )
+        .unwrap();
         assert!(selection.module_ids.is_empty());
         assert_eq!(selection.fallback_module_ids, vec!["a", "b"]);
     }
@@ -210,7 +248,13 @@ mod tests {
             module(temp.path(), "a", MountMode::Overlay, "system"),
             module(temp.path(), "z", MountMode::Overlay, "system"),
         ];
-        let selection = select_vfs_modules(&modules, temp.path(), &capabilities("mirage", true, Some("mirage"), 5), &["system".to_string()]).unwrap();
+        let selection = select_vfs_modules(
+            &modules,
+            temp.path(),
+            &capabilities("mirage", true, Some("mirage"), 5),
+            &["system".to_string()],
+        )
+        .unwrap();
         assert_eq!(selection.operations.len(), 1);
         assert_eq!(selection.operations[0].module_ids, vec!["z", "a"]);
     }

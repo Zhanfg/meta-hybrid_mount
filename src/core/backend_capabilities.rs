@@ -6,12 +6,12 @@ use std::fs;
 
 use anyhow::Result;
 
+#[cfg(feature = "kasumi")]
+use crate::sys::kasumi;
 use crate::{
     conf::{config::Config, schema::VfsBackendPreference},
     mount::zeromount::{self, ProbeState},
 };
-#[cfg(feature = "kasumi")]
-use crate::sys::kasumi;
 
 #[derive(Debug, Clone, Default)]
 pub struct BackendCapabilities {
@@ -73,15 +73,32 @@ impl BackendCapabilities {
         }
     }
 
-    pub fn can_use_kasumi(&self) -> bool { self.kasumi_usable }
-    pub fn kasumi_status(&self) -> &str { &self.kasumi_status }
-    pub fn can_use_vfs(&self) -> bool { self.vfs_usable }
-    pub fn vfs_status(&self) -> &str { &self.vfs_status }
-    pub fn vfs_fs_type(&self) -> Option<&str> { self.vfs_fs_type.as_deref() }
-    pub fn vfs_max_branches(&self) -> usize { self.vfs_max_branches }
+    pub fn can_use_kasumi(&self) -> bool {
+        self.kasumi_usable
+    }
+    pub fn kasumi_status(&self) -> &str {
+        &self.kasumi_status
+    }
+    pub fn can_use_vfs(&self) -> bool {
+        self.vfs_usable
+    }
+    pub fn vfs_status(&self) -> &str {
+        &self.vfs_status
+    }
+    pub fn vfs_fs_type(&self) -> Option<&str> {
+        self.vfs_fs_type.as_deref()
+    }
+    pub fn vfs_max_branches(&self) -> usize {
+        self.vfs_max_branches
+    }
 
     #[cfg(test)]
-    pub(crate) fn for_vfs_test(status: &str, usable: bool, fs_type: Option<&str>, max_branches: usize) -> Self {
+    pub(crate) fn for_vfs_test(
+        status: &str,
+        usable: bool,
+        fs_type: Option<&str>,
+        max_branches: usize,
+    ) -> Self {
         Self {
             kasumi_status: "disabled".to_string(),
             kasumi_usable: false,
@@ -103,7 +120,11 @@ fn detect_vfs(config: &Config) -> (String, bool, Option<String>) {
         VfsBackendPreference::Auto => {
             match zeromount::probe_clean_driver() {
                 Ok(ProbeState::Ready { version }) => {
-                    return (format!("zeromount_v{version}"), true, Some("zeromount".to_string()));
+                    return (
+                        format!("zeromount_v{version}"),
+                        true,
+                        Some("zeromount".to_string()),
+                    );
                 }
                 Ok(ProbeState::Unavailable { reason }) => crate::scoped_log!(
                     debug,
@@ -123,14 +144,19 @@ fn detect_vfs(config: &Config) -> (String, bool, Option<String>) {
                 .unwrap_or_else(|| ("unavailable".to_string(), false, None))
         }
         VfsBackendPreference::Zeromount => match zeromount::probe_clean_driver() {
-            Ok(ProbeState::Ready { version }) => {
-                (format!("zeromount_v{version}"), true, Some("zeromount".to_string()))
-            }
-            Ok(ProbeState::Unavailable { reason }) => {
-                (format!("zeromount_{reason}"), false, None)
-            }
+            Ok(ProbeState::Ready { version }) => (
+                format!("zeromount_v{version}"),
+                true,
+                Some("zeromount".to_string()),
+            ),
+            Ok(ProbeState::Unavailable { reason }) => (format!("zeromount_{reason}"), false, None),
             Err(error) => {
-                crate::scoped_log!(warn, "backend_capabilities", "ZeroMount probe failed: error={:#}", error);
+                crate::scoped_log!(
+                    warn,
+                    "backend_capabilities",
+                    "ZeroMount probe failed: error={:#}",
+                    error
+                );
                 ("zeromount_probe_error".to_string(), false, None)
             }
         },
