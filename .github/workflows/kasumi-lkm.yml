@@ -25,7 +25,7 @@ on:
         required: true
         type: string
       ddk_release:
-        description: "DDK release version"
+        description: "Audited DDK release version"
         required: false
         default: "20251104"
         type: string
@@ -50,12 +50,54 @@ jobs:
           fetch-depth: 0
           filter: 'tree:0'
 
-      - name: Validate target arch
+      - name: Validate target and resolve audited DDK image
+        id: ddk_image
         run: |
+          set -euo pipefail
+
           if [ "$TARGET_ARCH" != "arm64" ]; then
             echo "DDK workflow currently supports arm64 only, got: $TARGET_ARCH"
             exit 1
           fi
+
+          if [ "${{ inputs.ddk_release }}" != "20251104" ]; then
+            echo "Unreviewed DDK release rejected: ${{ inputs.ddk_release }}"
+            echo "Audited DDK release is 20251104. Update the pinned digest table and re-review before changing it."
+            exit 1
+          fi
+
+          case "$KMI" in
+            android12-5.10)
+              DDK_DIGEST="sha256:23b571c67d0375557fde0485183d372d572afb0b96b2c92e84b1d56eb4ac2037"
+              ;;
+            android13-5.10)
+              DDK_DIGEST="sha256:37c2187c81e8e4870a8f7a8596c96d6b9de13d1d0d465c0bef8a62d0e52f9e63"
+              ;;
+            android13-5.15)
+              DDK_DIGEST="sha256:593b73918e06a3f73b5c97a8b395d6d8bd1dc925d6a9a85384938c74183ed2d9"
+              ;;
+            android14-5.15)
+              DDK_DIGEST="sha256:9b4ba1f841d559552e37c6fed6a4e50b3b6ada00fd6ea1a8e554514b0b478349"
+              ;;
+            android14-6.1)
+              DDK_DIGEST="sha256:b71b1fbde7234a2784bb8f8cf367ecc2ed50c5e4544a924135fa3e9ef96cf3bd"
+              ;;
+            android15-6.6)
+              DDK_DIGEST="sha256:e2a1c36aef4837865d0d269401f1403fdefda1b39affdb7a9eab66735f6defff"
+              ;;
+            android16-6.12)
+              DDK_DIGEST="sha256:86216ff10dbe3e6d73477ac7fc3512414f394429b18b2f7be32182f34700ebd1"
+              ;;
+            *)
+              echo "No audited DDK image digest is registered for KMI: $KMI"
+              exit 1
+              ;;
+          esac
+
+          IMAGE="ghcr.io/ylarod/ddk@${DDK_DIGEST}"
+          echo "digest=$DDK_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Using audited DDK image for $KMI: $IMAGE"
 
       - name: Resolve Kasumi source
         id: kasumi_source
@@ -86,18 +128,20 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.OUT }}
-          key: kasumi-lkm-${{ runner.os }}-${{ env.KMI }}-${{ env.TARGET_ARCH }}-ddk-${{ inputs.ddk_release }}-kasumi-${{ steps.kasumi_source.outputs.sha }}-${{ hashFiles('.github/workflows/kasumi-lkm.yml') }}
+          key: kasumi-lkm-${{ runner.os }}-${{ env.KMI }}-${{ env.TARGET_ARCH }}-ddk-${{ steps.ddk_image.outputs.digest }}-kasumi-${{ steps.kasumi_source.outputs.sha }}-${{ hashFiles('.github/workflows/kasumi-lkm.yml') }}
 
       - name: Build kasumi_lkm.ko
         if: steps.cache-lkm.outputs.cache-hit != 'true'
+        env:
+          DDK_IMAGE: ${{ steps.ddk_image.outputs.image }}
         run: |
           set -euo pipefail
 
-          IMAGE="ghcr.io/ylarod/ddk:${KMI}-${{ inputs.ddk_release }}"
+          IMAGE="$DDK_IMAGE"
           KASUMI_VERSION="${{ steps.kasumi_source.outputs.version }}"
 
           echo "Cache miss for ${KMI}_${TARGET_ARCH}_kasumi_lkm.ko"
-          echo "Building with DDK image: $IMAGE"
+          echo "Building with digest-pinned DDK image: $IMAGE"
           docker pull "$IMAGE"
           docker run --rm --privileged \
             -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
